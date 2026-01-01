@@ -1,0 +1,160 @@
+/* JobAnalysis.css - Professional Clean Layout */
+:root {
+  --primary: #0f172a;
+  --accent: #2563eb;
+  --text-main: #1e293b;
+  --text-muted: #64748b;
+  --bg-subtle: #f8fafc;
+  --border: #e2e8f0;
+  --success: #166534;
+  --success-bg: #f0fdf4;
+  --danger: #991b1b;
+  --danger-bg: #fef2f2;
+}
+
+.analysisDashboard {
+  max-width: 850px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  animation: fadeIn 0.4s ease-out;
+}
+
+/* Header Section */
+.jobHeaderCard {
+  background: white;
+  padding: 40px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  text-align: center;
+}
+
+.jobPositionTitle {
+  font-size: 2rem;
+  font-weight: 800;
+  color: var(--primary);
+  margin-bottom: 8px;
+  letter-spacing: -0.02em;
+}
+
+.jobCompanyName {
+  font-size: 1.25rem;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* Stats (Match Score) */
+.statsBar {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-top: 30px;
+}
+
+.statBox {
+  padding: 20px;
+  background: var(--bg-subtle);
+  border-radius: 12px;
+  border: 1px solid var(--border);
+}
+
+.statNumber {
+  display: block;
+  font-size: 1.75rem;
+  font-weight: 800;
+  color: var(--primary);
+}
+
+.statLabel {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  font-weight: 700;
+  margin-top: 4px;
+}
+
+/* Section Cards */
+.responsibilitiesCard, .skillsSection {
+  background: white;
+  padding: 32px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+}
+
+.cardHeader {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--primary);
+  margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid var(--bg-subtle);
+  padding-bottom: 12px;
+}
+
+/* Skills Grid (Corrected Order) */
+.skillsGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+.skillCard {
+  padding: 14px 18px;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 0.95rem;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.skillCard.success { background: var(--success-bg); color: var(--success); border: 1px solid #dcfce7; }
+.skillCard.danger { background: var(--danger-bg); color: var(--danger); border: 1px solid #fee2e2; }
+
+/* Responsibility List */
+.responsibilityList { list-style: none; }
+.responsibilityList li {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--bg-subtle);
+  color: var(--text-main);
+  line-height: 1.6;
+  position: relative;
+  padding-left: 20px;
+}
+
+.responsibilityList li::before {
+  content: "•";
+  position: absolute;
+  left: 0;
+  color: var(--accent);
+  font-weight: bold;
+}
+
+/* Action Area */
+.actionArea {
+  background: var(--primary);
+  color: white;
+  padding: 32px;
+  border-radius: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.ctaButton {
+  background: white;
+  color: var(--primary);
+  padding: 14px 28px;
+  border-radius: 10px;
+  font-weight: 700;
+  border: none;
+  cursor: pointer;
+  transition: transform 0.2s;
+}
+
+.ctaButton:hover { transform: translateY(-2px); }
+
+@keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
