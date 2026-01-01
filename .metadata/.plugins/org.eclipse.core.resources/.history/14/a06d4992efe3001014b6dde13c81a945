@@ -1,0 +1,130 @@
+package com.cvbuilder.service;
+
+import com.cvbuilder.dto.JobAnalysisResponse;
+import com.cvbuilder.dto.MarketAnalysisResponse;
+import com.cvbuilder.entity.JobPosting;
+import com.cvbuilder.entity.User;
+import com.cvbuilder.entity.UserProfile;
+import com.cvbuilder.external.AiClient;
+import com.cvbuilder.external.JobScraperClient;
+import com.cvbuilder.repository.JobPostingRepository;
+import com.cvbuilder.repository.UserProfileRepository;
+import com.cvbuilder.repository.UserRepository;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Primary;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.*;
+import java.util.stream.Collectors;
+
+@Slf4j
+@Service
+@Primary
+@RequiredArgsConstructor
+public class JobAnalysisServiceImpl implements JobAnalysisService {
+
+    private final UserRepository userRepository;
+    private final UserProfileRepository userProfileRepository;
+    private final JobPostingRepository jobPostingRepository;
+    private final JobScraperClient scraper;
+    private final AiClient aiClient;
+    private final ObjectMapper objectMapper;
+
+    @Override
+    @Transactional
+    public MarketAnalysisResponse performMarketAnalysis(String area, Long userId) {
+        log.info("Canlı pazar analizi süreci başladı. Kullanıcı: {}, Alan: {}", userId, area);
+
+        UserProfile userProfile = userProfileRepository.findByUserId(userId)
+                .orElseThrow(() -> new IllegalArgumentException("Kullanıcı profili bulunamadı"));
+
+        String analysisArea = (area != null && !area.trim().isEmpty()) ? area.trim() : userProfile.getTitle();
+
+        // 1) İNTERNETE ÇIK VE CANLI VERİ ÇEK (Scraping)
+        // Veritabanına bakmadan doğrudan internetten 10 güncel ilanı tarıyoruz
+        List<Map<String, String>> liveJobs = scraper.searchAndFetchJobsLive(analysisArea, 10);
+
+        if (liveJobs.isEmpty()) {
+            throw new RuntimeException("İnternette '" + analysisArea + "' alanı ile ilgili canlı ilan bulunamadı.");
+        }
+
+        // 2) CANLI VERİDEN YETENEK FREKANSI ÇIKAR (Frekans Motoru)
+        Map<String, Integer> skillFrequencies = new HashMap<>();
+        for (Map<String, String> job : liveJobs) {
+            Set<String> extracted = extractSkillsFromRawText(job.get("jobContent"));
+            extracted.forEach(s -> skillFrequencies.put(s, skillFrequencies.getOrDefault(s, 0) + 1));
+        }
+
+        // 3) ÖNCELİKLENDİRME (AiCvService Mantığı: Kullanıcı vs Market)
+        List<String> topMarketSkills = skillFrequencies.entrySet().stream()
+                .sorted(Map.Entry.<String, Integer>comparingByValue().reversed())
+                .limit(20)
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toList());
+
+        Set<String> userSkills = getUserSkillSet(userProfile);
+
+        // Kullanıcıda olanlar (Güçlü Yanlar)
+        List<String> matchedSkills = topMarketSkills.stream()
+                .filter(s -> userSkills.contains(s.toLowerCase()))
+                .collect(Collectors.toList());
+
+        // Kullanıcıda olmayanlar (Eksikler)
+        List<String> missingSkills = topMarketSkills.stream()
+                .filter(s -> !userSkills.contains(s.toLowerCase()))
+                .limit(10)
+                .collect(Collectors.toList());
+
+        // 4) AI STRATEJİK TAVSİYE
+        String marketContext = String.format("Arama Alanı: %s, Çekilen İlan Sayısı: %d", analysisArea, liveJobs.size());
+        String strategyPrompt = String.format("""
+                Sen bir Kariyer Danışmanısın. %s için pazar analizi yap.
+                Eşleşen Yetenekler: %s
+                Pazarda İstenen Ama Eksik Olanlar: %s
+                Lütfen 3 cümlelik profesyonel bir aksiyon planı öner.
+                """, marketContext, matchedSkills, missingSkills);
+        
+        String aiRecommendation = aiClient.getQuickMarketAnalysis(strategyPrompt, null, userProfile);
+
+        return MarketAnalysisResponse.builder()
+                .area(analysisArea)
+                .topSkillsInMarket(skillFrequencies)
+                .userMissingSkills(missingSkills)
+                .aiRecommendation(aiRecommendation)
+                .build();
+    }
+
+    private Set<String> extractSkillsFromRawText(String text) {
+        if (text == null) return Collections.emptySet();
+        Set<String> found = new HashSet<>();
+        String lowerText = text.toLowerCase();
+        // Sektörel Sözlük (Bu liste uzatılabilir veya AI'ya yaptırılabilir)
+        String[] dictionary = {"java", "spring", "sql", "react", "angular", "python", "docker", "kubernetes", "aws", "proje yönetimi", "iş analizi", "elektrik", "plc", "autocad"};
+        for (String tech : dictionary) {
+            if (lowerText.contains(tech)) found.add(tech);
+        }
+        return found;
+    }
+
+    private Set<String> getUserSkillSet(UserProfile userProfile) {
+        if (userProfile.getSkills() == null) return Collections.emptySet();
+        return userProfile.getSkills().stream()
+                .map(s -> s.getSkillName().toLowerCase().trim())
+                .collect(Collectors.toSet());
+    }
+
+    @Override
+    @Transactional
+    public JobAnalysisResponse analyzeJobPosting(Long userId, String url) {
+        // Mevcut tekil ilan analiz kodun (Aynı kalabilir)
+        return null; 
+    }
+
+    @Override public List<JobPosting> getJobsByUserId(Long userId) { return jobPostingRepository.findByUserIdOrderByCreatedAtDesc(userId); }
+    @Override public JobPosting getJobById(Long jobId) { return jobPostingRepository.findById(jobId).orElse(null); }
+    @Override public JobAnalysisResponse analyzeJobPosting(Object object, String url) { return null; }
+}

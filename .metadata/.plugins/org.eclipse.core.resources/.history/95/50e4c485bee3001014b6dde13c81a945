@@ -1,0 +1,205 @@
+package com.cvbuilder.external;
+
+import com.cvbuilder.dto.OptimizedCvItem;
+import com.cvbuilder.dto.UserCertificateDTO;
+import com.cvbuilder.dto.UserEducationDTO;
+import com.cvbuilder.dto.UserLanguageDTO;
+import com.cvbuilder.entity.JobPosting;
+import com.cvbuilder.entity.UserProfile;
+import com.cvbuilder.entity.UserSkill;
+import com.cvbuilder.repository.JobPostingRepository;
+import com.cvbuilder.service.TranslationService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+
+import java.util.*;
+import java.util.stream.Collectors;
+
+@Component
+public class AiClient {
+
+    private static final Logger log = LoggerFactory.getLogger(AiClient.class);
+    private final TranslationService translationService;
+    private final JobPostingRepository jobPostingRepository;
+
+    @Autowired
+    public AiClient(TranslationService translationService, JobPostingRepository jobPostingRepository) {
+        this.translationService = translationService;
+        this.jobPostingRepository = jobPostingRepository;
+    }
+
+    /**
+     * BİREYSEL İŞ ANALİZİ: GEMINI tarafından yapılır.
+     */
+    public String analyzeJobSubmission(UserProfile user, String rawJobText) {
+        String userContext = formatUserProfile(user);
+        String jobText = safe(rawJobText);
+        
+        String prompt = """
+                SEN KIDEMLİ BİR TEKNİK İŞ ANALİSTİ VE RECRUITER'SIN. 
+                Görevin, adayın teknik yetkinliklerini, dil bilgisini ve profesyonel geçmişini iş ilanıyla %%100 doğrulukla karşılaştırmaktır.
+                ... (Orijinal Promptunun Devamı) ...
+                [Aday Profili]
+                %s
+                [İş İlanı]
+                %s
+                """.formatted(userContext, jobText);
+
+        try {
+            return translationService.generateContentWithProvider(prompt, "GEMINI");
+        } catch (Exception e) {
+            log.error("AI Analiz Hatası: ", e);
+            return "Analiz servisine şu anda ulaşılamıyor.";
+        }
+    }
+
+    /**
+     * PAZAR ANALİZİ: LLAMA (GROQ) tarafından yapılır.
+     */
+    public String analyzeMarketWithAI(String area, List<JobPosting> allJobs, UserProfile userProfile) {
+        String allJobsFormatted = formatAllJobPostingsForAI(allJobs);
+        String userContext = formatUserProfileForMarketAnalysis(userProfile);
+        
+        String prompt = """
+            SEN ÜST DÜZEY BİR TEKNOLOJİ PAZAR ANALİSTİSİN. 
+            ... (Orijinal Pazar Analizi Promptun) ...
+            [TÜM İLAN VERİLERİ]
+            %s
+            [ADAY PROFİLİ]
+            %s
+            """.formatted(area, area, area, allJobsFormatted, userContext);
+
+        try {
+            return translationService.generateContentWithProvider(prompt, "GROQ");
+        } catch (Exception e) {
+            log.error("AI Pazar Analizi Hatası: ", e);
+            return "Pazar analizi şu an gerçekleştirilemiyor.";
+        }
+    }
+
+    /**
+     * İŞ İLANI JSON DÖNÜŞTÜRME: GEMINI tarafından yapılır.
+     */
+    public String analyzeJobPostingUniversal(String rawJobText) {
+        if (rawJobText == null) rawJobText = "";
+        String prompt = String.format(
+                "SEN KIDEMLI BIR TEKNIK RECRUITER + IS ANALISTISIN.\n" +
+                "Asagidaki is ilanini analiz et ve SADECE JSON DONDUR.\n" +
+                "JSON SCHEMA:\n{...}\n\nIS ILANI METNI:\n%s\n", rawJobText);
+
+        try {
+            String response = translationService.generateContentWithProvider(prompt, "GEMINI");
+            if (response == null) return "{}";
+            return response.replaceAll("```json|```", "").trim();
+        } catch (Exception e) {
+            log.error("AI JSON Analiz Hatası: ", e);
+            return "{}";
+        }
+    }
+
+    /**
+     * CV ÖZET OLUŞTURMA: LLAMA (GROQ) tarafından yapılır.
+     */
+    public List<String> generateTailoredSummaries(UserProfile profile, String jobContext) {
+        String rawTitle = profile != null ? safe(profile.getTitle()) : "Profesyonel";
+        String userTitle = toTitleCase(rawTitle);
+        String skills = getPrioritizedSkills(profile);
+        int years = (profile != null && profile.getTotalExperienceYear() != null) ? profile.getTotalExperienceYear() : 0;
+
+        List<String> summaries = new ArrayList<>();
+        summaries.add(String.format("%s deneyime sahip bir %s olarak, %s alanlarındaki yetkinliğimle değer katmayı hedefliyorum.",
+                years > 0 ? years + " yıl" : "Yeni mezun", userTitle, skills));
+
+        try {
+            String prompt = String.format("Bir %s için %d yıl deneyimli... CV özet cümlesi yaz.", userTitle, years, skills);
+            String aiSummary = translationService.generateContentWithProvider(prompt, "GROQ");
+            if (aiSummary != null && !aiSummary.isBlank()) summaries.add(aiSummary.trim());
+        } catch (Exception e) {
+            log.warn("AI Özet oluşturulamadı.");
+        }
+        return summaries;
+    }
+
+    // --- TÜM YARDIMCI METODLARIN (ORİJİNAL HALİYLE) ---
+
+    public List<OptimizedCvItem> optimizeExperiences(UserProfile profile, JobPosting job) {
+        if (profile == null || profile.getExperiences() == null) return Collections.emptyList();
+        String jobSkills = (job != null) ? safe(job.getRequiredSkills()) : "";
+        return profile.getExperiences().stream().map(exp -> {
+            String desc = safe(exp.getDescription());
+            if (desc.length() > 10) desc = fixGrammarStrict(desc);
+            String matched = findIntersection(desc, jobSkills);
+            if (!matched.isEmpty()) desc += " Bu görevde " + matched + " yetkinliklerini aktif olarak kullandım.";
+            return new OptimizedCvItem(safe(exp.getPosition()), safe(exp.getCompany()), formatDateRange(exp.getStartDate(), exp.getEndDate()), Collections.singletonList(desc));
+        }).collect(Collectors.toList());
+    }
+
+    public List<UserEducationDTO> optimizeEducation(UserProfile profile, JobPosting job) {
+        if (profile == null || profile.getEducations() == null) return Collections.emptyList();
+        return profile.getEducations().stream().map(e -> UserEducationDTO.builder()
+                .id(e.getId()).schoolName(fixGrammarStrict(safe(e.getSchoolName()))).department(fixGrammarStrict(safe(e.getDepartment())))
+                .degree(safe(e.getDegree())).startYear(safe(e.getStartYear())).graduationYear(e.getEndYear()).gpa(safe(e.getGpa())).build())
+                .collect(Collectors.toList());
+    }
+
+    public String formatAllJobPostingsForAI(List<JobPosting> allJobs) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < Math.min(allJobs.size(), 100); i++) {
+            JobPosting job = allJobs.get(i);
+            sb.append("--- İLAN ").append(i + 1).append(" ---\n");
+            sb.append("POZİSYON: ").append(safe(job.getPosition())).append("\n");
+            sb.append("BECERİLER: ").append(safe(job.getRequiredSkills())).append("\n");
+        }
+        return sb.toString();
+    }
+
+    private String formatUserProfile(UserProfile user) {
+        if (user == null) return "Profil yok.";
+        StringBuilder sb = new StringBuilder();
+        sb.append("Başlık: ").append(safe(user.getTitle())).append("\n");
+        if (user.getSkills() != null) {
+            sb.append("Beceriler: ").append(user.getSkills().stream().map(UserSkill::getSkillName).collect(Collectors.joining(", ")));
+        }
+        return sb.toString();
+    }
+
+    private String fixGrammarStrict(String text) {
+        try {
+            return translationService.generateContentWithProvider("Metni düzelt: " + text, "GROQ");
+        } catch (Exception e) { return text; }
+    }
+
+    private String findIntersection(String text, String skills) {
+        if (text == null || skills == null || skills.isBlank()) return "";
+        Set<String> match = new HashSet<>();
+        String tLower = text.toLowerCase(new Locale("tr", "TR"));
+        for (String s : skills.split("[,;]")) {
+            if (!s.trim().isEmpty() && tLower.contains(s.trim().toLowerCase())) match.add(s.trim());
+        }
+        return String.join(", ", match);
+    }
+
+    private String toTitleCase(String input) {
+        if (input == null || input.isEmpty()) return "";
+        return Arrays.stream(input.trim().split("\\s+"))
+                .map(w -> w.isEmpty() ? "" : Character.toUpperCase(w.charAt(0)) + w.substring(1).toLowerCase())
+                .collect(Collectors.joining(" "));
+    }
+
+    private String safe(String text) { return (text == null || text.equalsIgnoreCase("null")) ? "" : text.trim(); }
+
+    private String formatDateRange(String start, String end) {
+        return (start != null ? start : "B.") + " - " + (end != null ? end : "Devam");
+    }
+
+    private String getPrioritizedSkills(UserProfile profile) {
+        if (profile == null || profile.getSkills() == null) return "";
+        return profile.getSkills().stream().limit(5).map(UserSkill::getSkillName).collect(Collectors.joining(", "));
+    }
+
+    private String formatUserProfileForMarketAnalysis(UserProfile user) {
+        return formatUserProfile(user); // Özet amaçlı orijinal metodun aynısı
+    }
+}

@@ -1,0 +1,16 @@
+package com.cvbuilder.repository;
+
+import com.cvbuilder.entity.JobPosting;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.List;
+import java.util.Optional;
+
+public interface JobPostingRepository extends JpaRepository<JobPosting, Long> {
+    List<JobPosting> findByUser_Id(Long userId);
+    List<JobPosting> findByUser_IdOrderByCreatedAtDesc(Long userId);
+    List<JobPosting> findByUser_IdAndUrl(Long userId, String url);
+    Optional<JobPosting> findFirstByUser_IdOrderByCreatedAtDesc(Long userId);
+    Optional<JobPosting> findTopByOrderByCreatedAtDesc();
+   // List<JobPosting> findTop100ByPositionContainingIgnoreCaseOrderByCreatedAtDesc(String area);
+}

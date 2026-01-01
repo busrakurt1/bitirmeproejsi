@@ -1,0 +1,31 @@
+package com.cvbuilder.service;
+
+import com.cvbuilder.dto.JobAnalysisResponse;
+import com.cvbuilder.dto.MarketAnalysisResponse;
+import com.cvbuilder.entity.JobPosting;
+import java.util.List;
+
+public interface JobAnalysisService {
+
+    /**
+     * Tekil bir iş ilanı URL'ini analiz eder.
+     */
+    JobAnalysisResponse analyzeJobPosting(Object object, String url);
+
+    /**
+     * Pazar analizi yapar - YENİ EKLENDİ
+     */
+    MarketAnalysisResponse performMarketAnalysis(String area, Long userId);
+
+    /**
+     * Belirli bir kullanıcıya ait tüm geçmiş iş ilanı kayıtlarını listeler.
+     */
+    List<JobPosting> getJobsByUserId(Long userId);
+
+    /**
+     * Veritabanından ID ile spesifik bir iş ilanı kaydını getirir.
+     */
+    JobPosting getJobById(Long jobId);
+
+	JobAnalysisResponse analyzeJobPosting(Long userId, String url);
+}

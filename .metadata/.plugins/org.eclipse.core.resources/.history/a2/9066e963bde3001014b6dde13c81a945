@@ -1,0 +1,31 @@
+package com.cvbuilder.service;
+
+import com.cvbuilder.config.GeminiProperties;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.*;
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
+import java.util.*;
+
+@Service
+@RequiredArgsConstructor
+public class GeminiService {
+    private final RestTemplate restTemplate;
+    private final GeminiProperties props;
+
+    public String analyzeJobPosting(String jobDescription) {
+        String apiKey = props.keyList().get(0); // İlk anahtarı al
+        String url = "https://generativelanguage.googleapis.com/v1beta/models/" + props.getModel() + ":generateContent?key=" + apiKey;
+
+        String prompt = "Aşağıdaki iş ilanını analiz et ve JSON formatında şu alanları döndür: " +
+                "position, company, location, technicalSkills (array), responsibilities (array). \n\nİlan: " + jobDescription;
+
+        Map<String, Object> requestBody = Map.of(
+            "contents", List.of(Map.of("parts", List.of(Map.of("text", prompt))))
+        );
+
+        ResponseEntity<Map> response = restTemplate.postForEntity(url, requestBody, Map.of().getClass());
+        // Gemini'den gelen cevabı ayıkla (Hata kontrolü eklenmeli)
+        return response.getBody().toString(); 
+    }
+}

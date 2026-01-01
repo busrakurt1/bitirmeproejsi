@@ -1,0 +1,134 @@
+package com.cvbuilder.external;
+
+import com.cvbuilder.dto.OptimizedCvItem;
+import com.cvbuilder.dto.UserCertificateDTO;
+import com.cvbuilder.dto.UserEducationDTO;
+import com.cvbuilder.dto.UserLanguageDTO;
+import com.cvbuilder.entity.JobPosting;
+import com.cvbuilder.entity.UserProfile;
+import com.cvbuilder.service.TranslationService;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+import java.util.*;
+import java.util.stream.Collectors;
+
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class AiClient {
+
+    private final TranslationService translationService;
+    private final ObjectMapper objectMapper; // Jackson Mapper kullanımı zorunlu
+
+    public String analyzeJobSubmission(UserProfile user, String rawJobText) {
+        String prompt = String.format("""
+            ADAY PROFİLİ: %s
+            İŞ İLANI: %s
+            GÖREVİN: Adayın bu işe uygunluğunu analiz et. Eşleşenleri ve eksikleri profesyonelce raporla.
+            """, formatUserProfile(user), rawJobText);
+        return translationService.generateContent(prompt);
+    }
+
+    public Map<String, Object> analyzeJobPostingDetailed(String rawJobText) {
+        if (rawJobText == null || rawJobText.isBlank()) return createEmptyResponse();
+
+        String prompt = String.format("""
+                SEN BİR İŞ İLANI ANALİZ MAKİNESİSİN. SADECE SAF JSON DÖNDÜR.
+                
+                METİN: %s
+                
+                JSON ŞEMASI:
+                {
+                  "position": "Pozisyon adı",
+                  "company": "Şirket adı",
+                  "location": "Konum",
+                  "workType": "Çalışma tipi",
+                  "experienceLevel": "Deneyim seviyesi",
+                  "educationLevel": "Eğitim seviyesi",
+                  "technicalSkills": ["skill1", "skill2"],
+                  "responsibilities": ["görev1", "görev2"],
+                  "summary": "2 cümlelik özet"
+                }
+                """, rawJobText);
+
+        try {
+            String response = translationService.generateContent(prompt);
+            String cleanJson = extractJsonFromResponse(response);
+            return objectMapper.readValue(cleanJson, new TypeReference<Map<String, Object>>() {});
+        } catch (Exception e) {
+            log.error("AI Detaylı Analiz JSON Hatası: ", e);
+            return createEmptyResponse();
+        }
+    }
+
+    public String analyzeMarketWithAI(String area, List<JobPosting> allJobs, UserProfile user) {
+        String jobsSummary = allJobs.stream()
+                .map(j -> j.getPosition() + " - " + j.getRequiredSkills())
+                .collect(Collectors.joining("\n"));
+        
+        String prompt = String.format("""
+            HEDEF ALAN: %s
+            MEVCUT İLANLAR: %s
+            ADAY PROFİLİ: %s
+            GÖREVİN: Pazardaki en çok istenen 10 beceriyi belirle ve adaya gelişim yol haritası sun.
+            """, area, jobsSummary, formatUserProfile(user));
+        return translationService.generateContent(prompt);
+    }
+
+    private String extractJsonFromResponse(String response) {
+        if (response == null) return "{}";
+        // JSON dışındaki açıklamaları temizleyen regex
+        String clean = response.replaceAll("(?s)^.*?(\\{.*\\}).*$", "$1").trim();
+        return clean.isEmpty() ? "{}" : clean;
+    }
+
+    private Map<String, Object> createEmptyResponse() {
+        Map<String, Object> empty = new HashMap<>();
+        String def = "Belirtilmemiş";
+        empty.put("position", def); empty.put("company", "Bilinmiyor");
+        empty.put("location", def); empty.put("workType", def);
+        empty.put("experienceLevel", def); empty.put("educationLevel", def);
+        empty.put("technicalSkills", new ArrayList<>());
+        empty.put("responsibilities", new ArrayList<>());
+        empty.put("summary", "");
+        return empty;
+    }
+
+    private String formatUserProfile(UserProfile user) {
+        if (user == null) return "Profil Bilgisi Yok";
+        return String.format("Unvan: %s, Yetenekler: %s", user.getTitle(), 
+            user.getSkills().stream().map(s -> s.getSkillName()).collect(Collectors.joining(", ")));
+    }
+
+    // Gerekli diğer optimize metotları (Sertifika, Dil vb. CV Oluşturma için)
+    public List<OptimizedCvItem> optimizeExperiences(UserProfile profile, JobPosting job) {
+        return Collections.emptyList();
+    }
+    public List<UserEducationDTO> optimizeEducation(UserProfile p, JobPosting j) {
+        return Collections.emptyList();
+    }
+    public List<String> generateTailoredSummaries(UserProfile p, String context) {
+        return Collections.emptyList();
+    }
+    public String getCareerAdvice(String title) {
+        return "Tavsiye hazır değil.";
+    }
+
+	public List<OptimizedCvItem> optimizeProjects(UserProfile profile, JobPosting job) {
+		// TODO Auto-generated method stub
+		return null;
+	}
+
+	public List<UserCertificateDTO> optimizeCertificates(UserProfile profile, JobPosting job) {
+		// TODO Auto-generated method stub
+		return null;
+	}
+
+	public List<UserLanguageDTO> optimizeLanguages(UserProfile profile, JobPosting job) {
+		// TODO Auto-generated method stub
+		return null;
+	}
+}

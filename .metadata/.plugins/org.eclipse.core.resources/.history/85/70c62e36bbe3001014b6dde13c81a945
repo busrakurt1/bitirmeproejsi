@@ -1,0 +1,27 @@
+package com.cvbuilder.external;
+
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.stereotype.Service;
+
+@Service
+public class AiRouter {
+
+    private final LlmClient groqClient;
+    private final LlmClient geminiClient;
+
+    // ✅ Qualifier mutlaka CONSTRUCTOR parametresinde olmalı
+    public AiRouter(
+            @Qualifier("groqClient") LlmClient groqClient,
+            @Qualifier("geminiClient") LlmClient geminiClient
+    ) {
+        this.groqClient = groqClient;
+        this.geminiClient = geminiClient;
+    }
+
+    public LlmClient pick(AiTask task) {
+        return switch (task) {
+            case CV_GENERATION -> groqClient;
+            case JOB_ANALYSIS -> geminiClient;
+        };
+    }
+}

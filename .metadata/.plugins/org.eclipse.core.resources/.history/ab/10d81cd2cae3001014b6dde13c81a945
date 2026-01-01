@@ -1,0 +1,27 @@
+package com.cvbuilder.repository;
+
+import com.cvbuilder.entity.JobPosting;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.List;
+import java.util.Optional;
+
+public interface JobPostingRepository extends JpaRepository<JobPosting, Long> {
+
+    // Bir kullanıcıya ait tüm iş ilanları
+    List<JobPosting> findByUserId(Long userId);
+
+    // --- YENİ EKLENEN: Kullanıcının ilanlarını tarihe göre (yeniden eskiye) sıralı getir ---
+    List<JobPosting> findByUserIdOrderByCreatedAtDesc(Long userId);
+
+    // Aynı URL daha önce eklenmiş mi kontrol etmek için
+    List<JobPosting> findByUserIdAndUrl(Long userId, String url);
+
+    // Kullanıcının en son eklediği ilanı (optional)
+    Optional<JobPosting> findFirstByUserIdOrderByCreatedAtDesc(Long userId);
+
+    // Sistemdeki EN SON eklenen ilan (user'a bağlı olmadan)
+    Optional<JobPosting> findTopByOrderByCreatedAtDesc();
+
+	List<JobPosting> findTop100ByPositionContainingIgnoreCaseOrderByCreatedAtDesc(String area);
+}

@@ -1,0 +1,144 @@
+package com.cvbuilder.external;
+
+import com.cvbuilder.dto.OptimizedCvItem;
+import com.cvbuilder.dto.UserCertificateDTO;
+import com.cvbuilder.dto.UserEducationDTO;
+import com.cvbuilder.dto.UserLanguageDTO;
+import com.cvbuilder.entity.JobPosting;
+import com.cvbuilder.entity.UserProfile;
+import com.cvbuilder.service.TranslationService;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+import java.util.*;
+import java.util.stream.Collectors;
+
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class AiClient {
+
+    private final TranslationService translationService;
+    private final ObjectMapper objectMapper;
+
+    /**
+     * İŞ İLANI DETAYLI ANALİZİ - GÖRSELDEKİ TÜM EKSİK BİLGİLER İÇİN
+     */
+    public Map<String, Object> analyzeJobPostingDetailed(String rawJobText) {
+        if (rawJobText == null || rawJobText.isBlank()) return createEmptyResponse();
+
+        String prompt = String.format("""
+                SEN BİR VERİ AYIKLAMA SİSTEMİSİN. Aşağıdaki iş ilanı metninden istenen alanları kesinlikle ayıkla ve SADECE JSON döndür.
+                
+                ÖZELLİKLE ŞU ÜÇ BİLGİYİ METİN İÇİNDEN BUL:
+                1. location: Şehir/İlçe bilgisi.
+                2. workType: Hibrit, Uzaktan (Remote), Tam Zamanlı gibi çalışma modeli.
+                3. experienceLevel: Stajyer, Junior, Senior gibi deneyim beklentisi.
+
+                ANALİZ EDİLECEK METİN:
+                %s
+                
+                DOLDURULACAK JSON ŞEMASI (Asla açıklama yapma, sadece JSON):
+                {
+                  "position": "İş başlığı",
+                  "company": "Şirket adı",
+                  "location": "Konum bilgisi (örn: İstanbul, Türkiye)",
+                  "workType": "Çalışma modeli (örn: Hibrit veya Remote)",
+                  "experienceLevel": "Aranan tecrübe (örn: 0-2 Yıl veya Stajyer)",
+                  "educationLevel": "Eğitim kriteri",
+                  "technicalSkills": ["skill1", "skill2"],
+                  "responsibilities": ["görev1", "görev2"],
+                  "summary": "İşin 2 cümlelik özeti"
+                }
+                """, rawJobText);
+
+        try {
+            String response = translationService.generateContent(prompt);
+            String cleanJson = extractJsonFromResponse(response);
+            return objectMapper.readValue(cleanJson, new TypeReference<Map<String, Object>>() {});
+        } catch (Exception e) {
+            log.error("AI JSON Ayrıştırma Hatası: ", e);
+            return createEmptyResponse();
+        }
+    }
+
+    private String extractJsonFromResponse(String response) {
+        if (response == null) return "{}";
+        // Regex: ilk '{' ve son '}' karakterleri arasındaki bloğu alır
+        String clean = response.replaceAll("(?s)^.*?(\\{.*\\}).*$", "$1").trim();
+        return clean.isEmpty() ? "{}" : clean;
+    }
+
+    private Map<String, Object> createEmptyResponse() {
+        Map<String, Object> map = new HashMap<>();
+        String def = "Belirtilmemiş";
+        map.put("position", def);
+        map.put("company", "Bilinmiyor");
+        map.put("location", def);
+        map.put("workType", def);
+        map.put("experienceLevel", def);
+        map.put("educationLevel", def);
+        map.put("technicalSkills", new ArrayList<String>());
+        map.put("responsibilities", new ArrayList<String>());
+        map.put("summary", "");
+        return map;
+    }
+
+    /**
+     * PROJELERİ OPTİMİZE ET
+     */
+    public List<OptimizedCvItem> optimizeProjects(UserProfile profile, JobPosting job) {
+        if (profile.getProjects() == null) return Collections.emptyList();
+        return profile.getProjects().stream().map(p -> new OptimizedCvItem(
+                p.getProjectName(), "Kişisel Proje", "", 
+                Collections.singletonList(p.getDescription()))).collect(Collectors.toList());
+    }
+
+    /**
+     * SERTİFİKALARI OPTİMİZE ET
+     */
+  /*  public List<UserCertificateDTO> optimizeCertificates(UserProfile profile, JobPosting job) {
+        if (profile.getCertificates() == null) return Collections.emptyList();
+        return profile.getCertificates().stream().map(c -> UserCertificateDTO.builder()
+                .certificateName(c.getCertificateName())
+                .organization(c.getOrganization())
+                .issueDate(c.getIssueDate()).build()).collect(Collectors.toList());
+    }*/
+
+    /**
+     * DİLLERİ OPTİMİZE ET
+     */
+    public List<UserLanguageDTO> optimizeLanguages(UserProfile profile, JobPosting job) {
+        if (profile.getLanguages() == null) return Collections.emptyList();
+        return profile.getLanguages().stream().map(l -> UserLanguageDTO.builder()
+                .language(l.getLanguage())
+                .level(l.getLevel()).build()).collect(Collectors.toList());
+    }
+
+    public String analyzeJobSubmission(UserProfile user, String rawJobText) {
+        String prompt = String.format("Aday profili: %s. İş ilanı: %s. Eşleşme analizi yap.", formatUserProfile(user), rawJobText);
+        return translationService.generateContent(prompt);
+    }
+
+    private String formatUserProfile(UserProfile user) {
+        return user != null ? user.getTitle() : "Profil Yok";
+    }
+
+    public List<OptimizedCvItem> optimizeExperiences(UserProfile p, JobPosting j) { return Collections.emptyList(); }
+    public List<UserEducationDTO> optimizeEducation(UserProfile p, JobPosting j) { return Collections.emptyList(); }
+    public List<String> generateTailoredSummaries(UserProfile p, String c) { return Collections.emptyList(); }
+    public String getCareerAdvice(String t) { return "Hazır değil."; }
+    public String analyzeMarketWithAI(String a, List<JobPosting> j, UserProfile p) { return "Pazar analizi tamamlandı."; }
+
+	public List<UserCertificateDTO> optimizeCertificates(UserProfile profile, JobPosting job) {
+		// TODO Auto-generated method stub
+		return null;
+	}
+
+	public String analyzeJobPostingUniversal(String jobContent) {
+		// TODO Auto-generated method stub
+		return null;
+	}
+}

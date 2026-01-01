@@ -1,0 +1,241 @@
+package com.cvbuilder.service;
+
+import com.cvbuilder.dto.GeneratedCvResponse;
+import com.cvbuilder.dto.OptimizedCvItem;
+import com.cvbuilder.dto.UserCertificateDTO;
+import com.cvbuilder.dto.UserLanguageDTO;
+import com.cvbuilder.entity.GeneratedCv;
+import com.cvbuilder.entity.JobPosting;
+import com.cvbuilder.entity.User;
+import com.cvbuilder.entity.UserProfile;
+import com.cvbuilder.entity.UserSkill;
+import com.cvbuilder.external.AiClient;
+import com.cvbuilder.repository.GeneratedCvRepository;
+import com.cvbuilder.repository.JobPostingRepository;
+import com.cvbuilder.repository.UserRepository;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+
+@Service
+@RequiredArgsConstructor
+public class CvGeneratorServiceImpl implements CvGeneratorService {
+
+    private final UserRepository userRepository;
+    private final JobPostingRepository jobPostingRepository;
+    private final GeneratedCvRepository generatedCvRepository;
+    private final AiClient aiClient;
+
+    @Override
+    @Transactional
+    public GeneratedCvResponse generateCvForJob(Long userId, Long jobPostingId) {
+
+        // 1) Kullanıcı ve ilanı DB'den çek
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found with id: " + userId));
+
+        JobPosting job = jobPostingRepository.findById(jobPostingId)
+                .orElseThrow(() -> new RuntimeException("Job posting not found with id: " + jobPostingId));
+
+        UserProfile profile = user.getProfile();
+        if (profile == null) {
+            throw new RuntimeException("User profile not found for user id: " + userId);
+        }
+
+        // 2) Kullanıcının skill listesi → String listesine çevir
+        List<String> userSkills = extractUserSkillNames(profile);
+
+        // 3) İlanın skill anahtar kelimeleri ve Sıralama
+        String jobRequiredSkills = job.getRequiredSkills();
+        List<String> prioritizedSkills = prioritizeSkills(userSkills, jobRequiredSkills);
+
+        // 4) AI için iş bağlamını hazırla
+        String jobContext = buildJobContext(job);
+
+        // 5) 🔥 AI ile "Tailored Summary" Üret
+        String tailoredSummary = aiClient.generateTailoredSummary(profile, jobContext);
+
+        // 6) 🔥 Deneyim ve Proje Optimizasyonu
+        List<OptimizedCvItem> optExperiences = aiClient.optimizeExperiences(profile, job);
+        //List<OptimizedCvItem> optProjects = aiClient.optimizeProjects(profile, job);
+
+        // 7) 🔥 YENİ: Dil ve Sertifika Optimizasyonu
+        List<UserLanguageDTO> optLanguages = aiClient.optimizeLanguages(profile, job);
+        List<UserCertificateDTO> optCertificates = aiClient.optimizeCertificates(profile, job);
+
+        // 8) Veritabanına kaydedilecek tam CV içeriğini oluştur
+        String fullContentToSave = buildAtsFriendlyContent(
+            user, profile, tailoredSummary, prioritizedSkills, 
+            optExperiences, optLanguages, optCertificates
+        );
+
+        GeneratedCv generatedCv = GeneratedCv.builder()
+                .user(user)
+                .jobPosting(job)
+                .templateName("ATS_SMART_FULL")
+                .content(fullContentToSave)
+                .build();
+
+        generatedCvRepository.save(generatedCv);
+
+        // 9) Frontend'e dönecek Response (DTO)
+        GeneratedCvResponse resp = new GeneratedCvResponse();
+        resp.setCvId(generatedCv.getId());
+        resp.setTemplateName(generatedCv.getTemplateName());
+        
+        resp.setTailoredSummary(tailoredSummary);
+        resp.setPrioritizedSkills(prioritizedSkills);
+        resp.setOptimizedExperiences(optExperiences);
+        //resp.setOptimizedProjects(optProjects);
+        resp.setOptimizedLanguages(optLanguages);      // Yeni: Dil bilgileri
+        resp.setOptimizedCertificates(optCertificates); // Yeni: Sertifika bilgileri
+
+        return resp;
+    }
+
+    // ================== YARDIMCI METOTLAR ==================
+
+    private List<String> extractUserSkillNames(UserProfile profile) {
+        if (profile.getSkills() == null || profile.getSkills().isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<String> skillNames = new ArrayList<>();
+        for (UserSkill s : profile.getSkills()) {
+            if (s.getSkillName() != null && !s.getSkillName().isBlank()) {
+                skillNames.add(s.getSkillName().trim());
+            }
+        }
+        return skillNames;
+    }
+
+    private String buildJobContext(JobPosting job) {
+        StringBuilder sb = new StringBuilder();
+        if (job.getAnalysisReport() != null && !job.getAnalysisReport().isBlank()) {
+            sb.append(job.getAnalysisReport()).append("\n\n");
+        }
+        if (job.getResponsibilities() != null && !job.getResponsibilities().isBlank()) {
+            sb.append("Sorumluluklar: ").append(job.getResponsibilities()).append("\n\n");
+        }
+        if (job.getRequiredSkills() != null && !job.getRequiredSkills().isBlank()) {
+            sb.append("Gereken Yetkinlikler: ").append(job.getRequiredSkills()).append("\n");
+        }
+        return sb.toString();
+    }
+
+    private List<String> prioritizeSkills(List<String> userSkills, String jobKeywordsString) {
+        if (userSkills == null || userSkills.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<String> jobKeywords = new ArrayList<>();
+        if (jobKeywordsString != null && !jobKeywordsString.isBlank()) {
+            jobKeywords = Arrays.asList(jobKeywordsString.split(","));
+        }
+        List<String> prioritized = new ArrayList<>();
+        List<String> others = new ArrayList<>();
+
+        for (String skill : userSkills) {
+            if (skill == null || skill.isBlank()) continue;
+            boolean isMatch = jobKeywords.stream()
+                    .anyMatch(k -> k != null && k.trim().equalsIgnoreCase(skill.trim()));
+
+            if (isMatch) prioritized.add(skill.trim());
+            else others.add(skill.trim());
+        }
+        prioritized.addAll(others);
+        return prioritized;
+    }
+
+    private String buildAtsFriendlyContent(User user,
+                                           UserProfile profile,
+                                           String tailoredSummary,
+                                           List<String> prioritizedSkills,
+                                           List<OptimizedCvItem> optExperiences,
+                                           List<UserLanguageDTO> optLanguages,
+                                           List<UserCertificateDTO> optCertificates) {
+
+        StringBuilder sb = new StringBuilder();
+
+        // HEADER
+        sb.append(user.getFullName() != null ? user.getFullName().toUpperCase() : "").append("\n");
+        if (profile.getTitle() != null && !profile.getTitle().isBlank()) {
+            sb.append(profile.getTitle()).append("\n");
+        }
+        sb.append((user.getEmail() != null ? user.getEmail() : "") + " | " +
+                  (user.getPhone() != null ? user.getPhone() : "") + " | " +
+                  (user.getLocation() != null ? user.getLocation() : "")).append("\n\n");
+
+        // SUMMARY
+        sb.append("SUMMARY\n");
+        sb.append(tailoredSummary != null ? tailoredSummary : "").append("\n\n");
+
+        // CORE SKILLS
+        sb.append("CORE SKILLS\n");
+        for (String skill : prioritizedSkills) {
+            sb.append("- ").append(skill).append("\n");
+        }
+        sb.append("\n");
+        
+        // WORK EXPERIENCE
+        sb.append("WORK EXPERIENCE\n");
+        if (optExperiences != null) {
+            for (OptimizedCvItem exp : optExperiences) {
+                sb.append(exp.getTitle()).append(" at ").append(exp.getSubtitle()).append("\n");
+                sb.append(exp.getDate()).append("\n");
+                for (String desc : exp.getDescription()) {
+                    sb.append("* ").append(desc).append("\n");
+                }
+                sb.append("\n");
+            }
+        }
+
+        // LANGUAGES (Yeni eklendi)
+        if (optLanguages != null && !optLanguages.isEmpty()) {
+            sb.append("LANGUAGES\n");
+            for (UserLanguageDTO lang : optLanguages) {
+                sb.append("- ").append(lang.getLanguage()).append(" (").append(lang.getLevel()).append(")\n");
+            }
+            sb.append("\n");
+        }
+
+        // CERTIFICATES (Yeni eklendi)
+        if (optCertificates != null && !optCertificates.isEmpty()) {
+            sb.append("CERTIFICATES\n");
+            for (UserCertificateDTO cert : optCertificates) {
+                sb.append("- ").append(cert.getName());
+                if (cert.getIssuer() != null && !cert.getIssuer().isBlank()) {
+                    sb.append(" - ").append(cert.getIssuer());
+                }
+                if (cert.getDate() != null && !cert.getDate().isBlank()) {
+                    sb.append(" (").append(cert.getDate()).append(")");
+                }
+                sb.append("\n");
+            }
+            sb.append("\n");
+        }
+
+        // EDUCATION (Zaten varsa ekle)
+        if (profile.getEducationSchool() != null && !profile.getEducationSchool().isBlank()) {
+            sb.append("EDUCATION\n");
+            sb.append(profile.getEducationSchool());
+            if (profile.getEducationDegree() != null && !profile.getEducationDegree().isBlank()) {
+                sb.append(" - ").append(profile.getEducationDegree());
+            }
+            if (profile.getEducationDepartment() != null && !profile.getEducationDepartment().isBlank()) {
+                sb.append(" - ").append(profile.getEducationDepartment());
+            }
+            sb.append("\n");
+            if (profile.getEducationStartYear() != null && !profile.getEducationStartYear().isBlank()) {
+                sb.append(profile.getEducationStartYear()).append(" - ")
+                  .append(profile.getEducationEndYear() != null ? profile.getEducationEndYear() : "Present");
+            }
+            sb.append("\n\n");
+        }
+
+        return sb.toString();
+    }
+}

@@ -1,0 +1,251 @@
+package com.cvbuilder.service;
+
+import com.cvbuilder.dto.JobAnalysisResponse;
+import com.cvbuilder.dto.MarketAnalysisResponse;
+import com.cvbuilder.entity.JobPosting;
+import com.cvbuilder.entity.User;
+import com.cvbuilder.entity.UserProfile;
+import com.cvbuilder.entity.UserSkill;
+import com.cvbuilder.external.AiClient;
+import com.cvbuilder.external.JobScraperClient;
+import com.cvbuilder.repository.JobPostingRepository;
+import com.cvbuilder.repository.UserProfileRepository;
+import com.cvbuilder.repository.UserRepository;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Primary;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.*;
+import java.util.stream.Collectors;
+
+@Slf4j
+@Service
+@Primary // Bean çakışmasını önler
+@RequiredArgsConstructor
+public class JobAnalysisServiceImpl implements JobAnalysisService {
+
+    private final UserRepository userRepository;
+    private final UserProfileRepository userProfileRepository;
+    private final JobPostingRepository jobPostingRepository;
+    private final JobScraperClient scraper;
+    private final AiClient aiClient;
+    private final ObjectMapper objectMapper;
+
+    // =================================================================================
+    // 📊 PAZAR ANALİZİ (CANLI VERİ ENTEGRASYONLU)
+    // =================================================================================
+    @Override
+    @Transactional
+    public MarketAnalysisResponse performMarketAnalysis(String area, Long userId) {
+        log.info("Pazar analizi başlatılıyor. Kullanıcı: {}, Alan: {}", userId, area);
+
+        UserProfile userProfile = userProfileRepository.findByUserId(userId)
+                .orElseThrow(() -> new IllegalArgumentException("Kullanıcı profili bulunamadı"));
+
+        String analysisArea = (area != null && !area.trim().isEmpty()) ? area.trim() : userProfile.getDepartment();
+        
+        // 1) İLGİLİ İLANLARI BUL (Eğer DB'de yoksa Scraper ile internete çıkış simülasyonu)
+        List<JobPosting> relevantJobs = getRelevantJobPostingsEnhanced(analysisArea);
+
+        // 2) SKILL FREKANSI HESAPLA
+        Map<String, Integer> skillFrequencies = new HashMap<>();
+        for (JobPosting job : relevantJobs) {
+            Set<String> extracted = extractSkillsFromJobPosting(job);
+            extracted.forEach(s -> skillFrequencies.put(s, skillFrequencies.getOrDefault(s, 0) + 1));
+        }
+
+        // 3) ÖNCELİKLENDİRME MANTIĞI (AiCvService Benzeri)
+        List<String> topMarketSkills = skillFrequencies.entrySet().stream()
+                .sorted(Map.Entry.<String, Integer>comparingByValue().reversed())
+                .limit(30)
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toList());
+
+        Set<String> userSkills = getUserSkillSet(userProfile);
+
+        // Eşleşenler (Güçlü Yanlar)
+        List<String> matchedSkills = topMarketSkills.stream()
+                .filter(s -> checkIfUserHasSkill(s, userSkills))
+                .map(this::capitalizeFirstLetter)
+                .collect(Collectors.toList());
+
+        // Eksikler (Gelişim Alanları)
+        List<String> missingSkills = topMarketSkills.stream()
+                .filter(s -> !checkIfUserHasSkill(s, userSkills))
+                .limit(10)
+                .map(this::capitalizeFirstLetter)
+                .collect(Collectors.toList());
+
+        // 4) AI STRATEJİK TAVSİYE (Prompt Engineering)
+        String strategyPrompt = createMarketStrategyPrompt(analysisArea, userProfile, matchedSkills, missingSkills);
+        String aiRecommendation = aiClient.getQuickMarketAnalysis(strategyPrompt, relevantJobs, userProfile);
+
+        return MarketAnalysisResponse.builder()
+                .area(analysisArea)
+                .userDepartment(userProfile.getDepartment())
+                .userTitle(userProfile.getTitle())
+                .topSkillsInMarket(skillFrequencies)
+                .userMissingSkills(missingSkills)
+                .aiRecommendation(aiRecommendation)
+                .isAutoAnalyzed(area == null || area.isBlank())
+                .build();
+    }
+
+    // =================================================================================
+    // 🔍 TEKİL İLAN ANALİZİ
+    // =================================================================================
+    @Override
+    @Transactional
+    public JobAnalysisResponse analyzeJobPosting(Long userId, String url) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new IllegalArgumentException("Kullanıcı bulunamadı"));
+
+        // İnternetten veriyi çek (Canlı veri girişi noktası burasıdır)
+        Map<String, String> scrapedData = scraper.fetchJobData(url);
+        String jobContent = scrapedData.getOrDefault("jobContent", scrapedData.getOrDefault("fullText", ""));
+
+        if (jobContent == null || jobContent.isBlank()) {
+            throw new RuntimeException("İlan içeriği boş. Kaynak site bot koruması uyguluyor olabilir.");
+        }
+
+        // AI ile içeriği yapılandırılmış JSON'a çevir
+        String jsonResult = aiClient.analyzeJobPostingUniversal(jobContent);
+        JobAiResult aiData = parseAiResult(jsonResult);
+
+        // Kullanıcı yetenek uyumunu kontrol et
+        List<String> userSkills = getUserSkillsNormalized(user);
+        List<String> matched = aiData.technicalSkills.stream()
+                .filter(req -> isUserHasSkill(userSkills, req))
+                .collect(Collectors.toList());
+
+        List<String> missing = aiData.technicalSkills.stream()
+                .filter(req -> !isUserHasSkill(userSkills, req))
+                .collect(Collectors.toList());
+
+        String report = generateUniversalReport(aiData, matched);
+        JobPosting jp = saveJobPosting(user, url, aiData, jobContent, report);
+
+        return JobAnalysisResponse.builder()
+                .jobId(jp.getId())
+                .matchedSkills(matched)
+                .missingSkills(missing)
+                .position(aiData.position)
+                .company(aiData.company)
+                .matchScore(calculateScore(aiData.technicalSkills.size(), matched.size()))
+                .formattedAnalysis(report)
+                .summary(aiData.summary)
+                .build();
+    }
+
+    // =================================================================================
+    // 🛠️ YARDIMCI VE MANTIKSAL METOTLAR
+    // =================================================================================
+
+    private List<JobPosting> getRelevantJobPostingsEnhanced(String area) {
+        // 1. Önce veritabanında bu alanla ilgili ilanları ara
+        List<JobPosting> dbMatches = jobPostingRepository.findTop100ByPositionContainingIgnoreCaseOrderByCreatedAtDesc(area);
+        
+        // 2. EĞER DB'DE YETERLİ VERİ YOKSA (Burada internete çıkış simüle edilir)
+        if (dbMatches.size() < 10) {
+            log.warn("Pazar analizi için DB'de yeterli veri yok ({}), lütfen önce sisteme birkaç {} ilanı ekleyin.", dbMatches.size(), area);
+            // Fallback: DB'deki en güncel genel ilanları getir
+            return jobPostingRepository.findAll(PageRequest.of(0, 50, Sort.by(Sort.Direction.DESC, "createdAt"))).getContent();
+        }
+        return dbMatches;
+    }
+
+    private Set<String> extractSkillsFromJobPosting(JobPosting job) {
+        Set<String> skills = new HashSet<>();
+        if (job.getRequiredSkills() != null) {
+            Arrays.stream(job.getRequiredSkills().split("[,;\\n|]"))
+                    .map(s -> s.trim().toLowerCase())
+                    .filter(s -> s.length() > 2)
+                    .forEach(skills::add);
+        }
+        return skills;
+    }
+
+    private String createMarketStrategyPrompt(String area, UserProfile profile, List<String> matched, List<String> missing) {
+        return String.format("""
+                Sen kıdemli bir teknoloji kariyer koçusun. 
+                Adayın mevcut profili ile %s alanındaki pazar trendlerini karşılaştır.
+                
+                GÜÇLÜ YANLARIMIZ: %s
+                EKSİK YANLARIMIZ: %s
+                
+                GÖREVİN:
+                1. Bu adayın %s pazarındaki rekabet gücünü analiz et.
+                2. Eksik yeteneklerden hangisini öğrenirse maaş beklentisinin en çok artacağını belirt.
+                3. Kariyerini 2025 trendlerine göre şekillendirmesi için 3 cümlelik bir yol haritası ver.
+                """, area, String.join(", ", matched), String.join(", ", missing), area);
+    }
+
+    private boolean checkIfUserHasSkill(String marketSkill, Set<String> userSkills) {
+        return userSkills.stream().anyMatch(us -> marketSkill.toLowerCase().contains(us.toLowerCase()));
+    }
+
+    private Set<String> getUserSkillSet(UserProfile userProfile) {
+        if (userProfile.getSkills() == null) return Collections.emptySet();
+        return userProfile.getSkills().stream()
+                .map(us -> us.getSkillName().toLowerCase().trim())
+                .collect(Collectors.toSet());
+    }
+
+    private int calculateScore(int total, int matched) {
+        if (total == 0) return 0;
+        return (int) Math.round((matched * 100.0) / total);
+    }
+
+    private JobPosting saveJobPosting(User user, String url, JobAiResult aiData, String rawText, String report) {
+        JobPosting jp = JobPosting.builder()
+                .user(user)
+                .url(url)
+                .position(aiData.position)
+                .title(aiData.company)
+                .requiredSkills(String.join(", ", aiData.technicalSkills))
+                .cleanedText(rawText.substring(0, Math.min(rawText.length(), 3900)))
+                .analysisReport(report)
+                .createdAt(new Date())
+                .build();
+        return jobPostingRepository.save(jp);
+    }
+
+    private JobAiResult parseAiResult(String json) {
+        JobAiResult result = new JobAiResult();
+        try {
+            JsonNode root = objectMapper.readTree(json);
+            result.position = root.path("position").asText("Belirtilmemiş");
+            result.company = root.path("company").asText("Belirtilmemiş");
+            result.summary = root.path("summary").asText("");
+            root.path("technicalSkills").forEach(n -> result.technicalSkills.add(n.asText()));
+        } catch (Exception e) { log.error("JSON Parse Hatası", e); }
+        return result;
+    }
+
+    private String generateUniversalReport(JobAiResult data, List<String> matched) {
+        StringBuilder sb = new StringBuilder("### İŞ ANALİZİ\n\n");
+        data.technicalSkills.forEach(s -> sb.append(matched.contains(s) ? "✅ " : "❌ ").append(s).append("\n"));
+        return sb.toString();
+    }
+
+    // Gerekli Interface Metotları
+    @Override public List<JobPosting> getJobsByUserId(Long userId) { return jobPostingRepository.findByUserIdOrderByCreatedAtDesc(userId); }
+    @Override public JobPosting getJobById(Long jobId) { return jobPostingRepository.findById(jobId).orElse(null); }
+    @Override public JobAnalysisResponse analyzeJobPosting(Object object, String url) { return null; }
+    private List<String> getUserSkillsNormalized(User user) { return getUserSkillSet(user.getProfile()).stream().collect(Collectors.toList()); }
+    private boolean isUserHasSkill(List<String> userSkills, String req) { return userSkills.stream().anyMatch(u -> req.toLowerCase().contains(u)); }
+    private String capitalizeFirstLetter(String s) { return s.substring(0, 1).toUpperCase() + s.substring(1); }
+
+    private static class JobAiResult {
+        public String position;
+        public String company;
+        public String summary;
+        public List<String> technicalSkills = new ArrayList<>();
+    }
+}

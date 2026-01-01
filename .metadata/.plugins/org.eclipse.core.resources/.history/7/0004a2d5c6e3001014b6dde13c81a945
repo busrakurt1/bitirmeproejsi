@@ -1,0 +1,17 @@
+package com.cvbuilder.dto;
+
+import java.util.Date;
+import java.util.List;
+import java.util.Map;
+
+import lombok.Builder;
+import lombok.Data;
+
+@Data
+@Builder
+public class MarketAnalysisResponse {
+	private String userTitle; // Örn: Backend Developer
+    private Map<String, Integer> topSkillsInMarket; // Java: 75, Spring: 50...
+    private List<String> userMissingSkills; // Kullanıcının pazar lideri olup da bilmediği 3-4 şey
+    private String aiRecommendation; // AI'nın "Java öğrenmelisin" dediği kısım
+}

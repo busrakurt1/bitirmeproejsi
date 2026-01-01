@@ -1,0 +1,406 @@
+package com.cvbuilder.external;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.jsoup.Connection;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.select.Elements;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
+
+import java.io.IOException;
+import java.util.*;
+
+@Component
+public class JobScraperClient {
+
+    private static final Logger logger = LoggerFactory.getLogger(JobScraperClient.class);
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    // Kariyer.net için özel cookie ve header'lar
+    private static final Map<String, String> KARIYER_NET_HEADERS = Map.of(
+            "User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language", "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Encoding", "gzip, deflate, br",
+            "Connection", "keep-alive",
+            "Upgrade-Insecure-Requests", "1",
+            "Sec-Fetch-Dest", "document",
+            "Sec-Fetch-Mode", "navigate",
+            "Sec-Fetch-Site", "none",
+            "Cache-Control", "max-age=0"
+    );
+
+    public Map<String, String> fetchJobData(String url) {
+        Map<String, String> result = new HashMap<>();
+        result.put("url", url);
+        result.put("scrapedAt", new Date().toString());
+        
+        logger.info("Fetching job data from URL: {}", url);
+
+        try {
+            Connection connection = Jsoup.connect(url)
+                    .headers(KARIYER_NET_HEADERS)
+                    .timeout(30000)
+                    .followRedirects(true)
+                    .ignoreHttpErrors(true)
+                    .maxBodySize(10 * 1024 * 1024); // 10MB
+
+            // Kariyer.net için özel cookie ekle
+            if (url.contains("kariyer.net")) {
+                connection.cookie("JobSeekerSource", "Direct");
+                connection.cookie("SiteType", "Desktop");
+            }
+
+            Connection.Response response = connection.execute();
+            
+            logger.debug("Response status: {}, Content-Type: {}", 
+                    response.statusCode(), response.contentType());
+
+            Document doc = response.parse();
+            
+            // Debug için HTML'in ilk 1000 karakterini logla
+            String first1000 = doc.html().length() > 1000 ? 
+                    doc.html().substring(0, 1000) + "..." : doc.html();
+            logger.debug("First 1000 chars of HTML: {}", first1000);
+
+            // 1. JSON-LD çekmeyi dene (en güvenilir)
+            JobPostingLd ld = extractJobPostingFromJsonLd(doc);
+            if (ld != null) {
+                logger.info("Found JSON-LD data: position={}, company={}", 
+                        ld.position, ld.company);
+                
+                result.put("position", ld.position);
+                result.put("company", ld.company);
+                result.put("location", ld.location);
+                result.put("jobContent", ld.description);
+                result.put("structuredData", ld.rawJson);
+                result.put("dataSource", "JSON-LD");
+            } else {
+                logger.warn("No JSON-LD data found for URL: {}", url);
+            }
+
+            // 2. Eğer JSON-LD'de eksik varsa, HTML'den çekmeyi dene
+            if (result.get("jobContent") == null || 
+                result.get("jobContent").length() < 100) {
+                
+                logger.info("JSON-LD content insufficient, trying HTML extraction");
+                
+                // Kariyer.net için özel extraction
+                Map<String, String> htmlData = extractFromKariyerNet(doc);
+                
+                // Eksik alanları doldur
+                htmlData.forEach((key, value) -> {
+                    if ((result.get(key) == null || result.get(key).isBlank()) 
+                            && !value.isBlank()) {
+                        result.put(key, value);
+                    }
+                });
+                
+                if (result.containsKey("position") && !result.get("position").isBlank()) {
+                    result.put("dataSource", "HTML");
+                }
+            }
+
+            // 3. Eğer hala boşsa, sayfa başlığından pozisyon çıkar
+            if (result.get("position") == null || result.get("position").isBlank()) {
+                String title = extractPositionFromTitle(doc.title());
+                if (!title.isBlank()) {
+                    result.put("position", title);
+                    result.put("dataSource", "Page Title");
+                }
+            }
+
+            // 4. Son çare: Tüm sayfa metni
+            if (result.get("jobContent") == null || result.get("jobContent").length() < 50) {
+                String fullText = cleanBodyText(doc.body());
+                if (!fullText.isBlank()) {
+                    result.put("jobContent", fullText);
+                    result.put("dataSource", "Full Page Text");
+                }
+            }
+
+            // Debug için çekilen verileri logla
+            logger.info("Scraped data summary for {}: position={}, company={}, contentLength={}",
+                    url,
+                    result.get("position"),
+                    result.get("company"),
+                    result.get("jobContent") != null ? result.get("jobContent").length() : 0);
+
+            return result;
+
+        } catch (IOException e) {
+            logger.error("Failed to fetch job data from {}: {}", url, e.getMessage(), e);
+            throw new RuntimeException("İlan çekilemedi: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Kariyer.net için özel HTML parsing
+     */
+    private Map<String, String> extractFromKariyerNet(Document doc) {
+        Map<String, String> data = new HashMap<>();
+        
+        // 1. Pozisyon başlığı
+        Element titleEl = doc.selectFirst("h1[class*='title'], h1[class*='ilan'], .job-title, .position-title");
+        if (titleEl != null) {
+            data.put("position", normalize(titleEl.text()));
+        }
+        
+        // 2. Şirket adı
+        Element companyEl = doc.selectFirst(".company-name, .firma-adi, [class*='company'], [class*='firma']");
+        if (companyEl != null) {
+            data.put("company", normalize(companyEl.text()));
+        }
+        
+        // 3. Lokasyon
+        Element locationEl = doc.selectFirst(".location, .lokasyon, [class*='location'], [class*='city']");
+        if (locationEl != null) {
+            data.put("location", normalize(locationEl.text()));
+        }
+        
+        // 4. İlan açıklaması - birden fazla olası selector
+        String[] descriptionSelectors = {
+                ".job-description",
+                ".description-content",
+                ".detail-content",
+                ".content-body",
+                "[class*='description']",
+                "[class*='detail']",
+                ".jobDetail",
+                "#jobDetail",
+                "main",
+                "article"
+        };
+        
+        StringBuilder description = new StringBuilder();
+        for (String selector : descriptionSelectors) {
+            Elements elements = doc.select(selector);
+            for (Element el : elements) {
+                String text = normalize(el.text());
+                // İş ilanına benzeyen metinleri filtrele
+                if (text.length() > 200 && 
+                    (text.toLowerCase().contains("aranan") ||
+                     text.toLowerCase().contains("nitelik") ||
+                     text.toLowerCase().contains("sorumluluk") ||
+                     text.toLowerCase().contains("tecrübe") ||
+                     text.toLowerCase().contains("beceri"))) {
+                    description.append(text).append("\n\n");
+                }
+            }
+        }
+        
+        if (description.length() > 0) {
+            data.put("jobContent", description.toString());
+        }
+        
+        return data;
+    }
+
+    /**
+     * Sayfa başlığından pozisyon adını çıkar
+     */
+    private String extractPositionFromTitle(String title) {
+        if (title == null || title.isBlank()) return "";
+        
+        // Kariyer.net title formatı: "Pozisyon Adı - Şirket Adı - Kariyer.net"
+        String[] parts = title.split(" - ");
+        if (parts.length > 0) {
+            String position = parts[0].trim();
+            // "Kariyer.net" veya "İş İlanı" gibi kelimeleri temizle
+            position = position.replace("Kariyer.net", "")
+                              .replace("İş İlanı", "")
+                              .replace("İş İlânı", "")
+                              .trim();
+            return position;
+        }
+        return "";
+    }
+
+    /**
+     * JSON-LD extraction (mevcut kodun geliştirilmiş hali)
+     */
+    private JobPostingLd extractJobPostingFromJsonLd(Document doc) {
+        Elements scripts = doc.select("script[type='application/ld+json']");
+        
+        logger.debug("Found {} JSON-LD scripts", scripts.size());
+        
+        for (int i = 0; i < scripts.size(); i++) {
+            Element script = scripts.get(i);
+            String json = safe(script.html());
+            
+            if (json.isBlank()) continue;
+            
+            logger.debug("Parsing JSON-LD script #{}, length: {}", i, json.length());
+            
+            try {
+                JsonNode root = objectMapper.readTree(json);
+                JobPostingLd result = findJobPostingInNode(root, json);
+                
+                if (result != null) {
+                    logger.info("Successfully parsed JSON-LD: {}", result);
+                    return result;
+                }
+            } catch (Exception e) {
+                logger.warn("Failed to parse JSON-LD script #{}: {}", i, e.getMessage());
+                // Devam et, diğer script'lere bak
+            }
+        }
+        
+        return null;
+    }
+
+    private JobPostingLd findJobPostingInNode(JsonNode node, String rawJson) {
+        if (node == null) return null;
+        
+        // Check if this node is a JobPosting
+        if (isJobPostingNode(node)) {
+            return parseJobPostingNode(node, rawJson);
+        }
+        
+        // Check array
+        if (node.isArray()) {
+            for (JsonNode child : node) {
+                JobPostingLd result = findJobPostingInNode(child, rawJson);
+                if (result != null) return result;
+            }
+        }
+        
+        // Check @graph
+        JsonNode graph = node.get("@graph");
+        if (graph != null && graph.isArray()) {
+            for (JsonNode child : graph) {
+                JobPostingLd result = findJobPostingInNode(child, rawJson);
+                if (result != null) return result;
+            }
+        }
+        
+        // Check nested objects
+        Iterator<Map.Entry<String, JsonNode>> fields = node.fields();
+        while (fields.hasNext()) {
+            Map.Entry<String, JsonNode> field = fields.next();
+            JobPostingLd result = findJobPostingInNode(field.getValue(), rawJson);
+            if (result != null) return result;
+        }
+        
+        return null;
+    }
+
+    private boolean isJobPostingNode(JsonNode node) {
+        if (!node.isObject()) return false;
+        
+        JsonNode type = node.get("@type");
+        if (type == null) return false;
+        
+        if (type.isTextual()) {
+            return type.asText("").toLowerCase().contains("jobposting");
+        }
+        
+        if (type.isArray()) {
+            for (JsonNode t : type) {
+                if (t.asText("").toLowerCase().contains("jobposting")) {
+                    return true;
+                }
+            }
+        }
+        
+        return false;
+    }
+
+    private JobPostingLd parseJobPostingNode(JsonNode node, String rawJson) {
+        JobPostingLd ld = new JobPostingLd();
+        ld.rawJson = rawJson;
+        
+        // Title/Position
+        ld.position = safe(node.path("title").asText(""));
+        if (ld.position.isBlank()) {
+            ld.position = safe(node.path("alternativeHeadline").asText(""));
+        }
+        
+        // Company
+        JsonNode org = node.path("hiringOrganization");
+        if (org.isObject()) {
+            ld.company = safe(org.path("name").asText(""));
+        } else if (org.isTextual()) {
+            ld.company = safe(org.asText(""));
+        }
+        
+        // Location
+        JsonNode location = node.path("jobLocation");
+        if (location.isArray() && location.size() > 0) {
+            location = location.get(0);
+        }
+        
+        if (location.isObject()) {
+            JsonNode address = location.path("address");
+            List<String> locParts = new ArrayList<>();
+            
+            String locality = safe(address.path("addressLocality").asText(""));
+            String region = safe(address.path("addressRegion").asText(""));
+            String country = safe(address.path("addressCountry").asText(""));
+            
+            if (!locality.isBlank()) locParts.add(locality);
+            if (!region.isBlank()) locParts.add(region);
+            if (!country.isBlank()) locParts.add(country);
+            
+            ld.location = String.join(", ", locParts);
+        }
+        
+        // Description
+        String description = node.path("description").asText("");
+        if (!description.isBlank()) {
+            // HTML temizleme
+            try {
+                Document descDoc = Jsoup.parse(description);
+                ld.description = normalize(descDoc.text());
+            } catch (Exception e) {
+                ld.description = normalize(description);
+            }
+        }
+        
+        return ld;
+    }
+
+    private String cleanBodyText(Element body) {
+        if (body == null) return "";
+        
+        // Gereksiz elementleri kaldır
+        body.select("script, style, nav, header, footer, " +
+                   ".nav, .menu, .sidebar, .breadcrumb, " +
+                   ".cookie, .modal, .popup, .advertisement").remove();
+        
+        return normalize(body.text());
+    }
+
+    private String normalize(String s) {
+        if (s == null) return "";
+        return s.replaceAll("\\s+", " ").trim();
+    }
+
+    private String safe(String s) {
+        return s == null ? "" : s.trim();
+    }
+
+    private static class JobPostingLd {
+        String position = "";
+        String company = "";
+        String location = "";
+        String description = "";
+        String rawJson = "";
+        
+        @Override
+        public String toString() {
+            return String.format("JobPostingLd{position='%s', company='%s', location='%s', descriptionLength=%d}",
+                    position, company, location, description.length());
+        }
+    }
+
+    // Mevcut metodlar...
+    public List<String> fetchLatestJobUrls(String normalizedTitle, int limit, boolean includeClosed, String sort) {
+        // Implementation...
+        return new ArrayList<>();
+    }
+}

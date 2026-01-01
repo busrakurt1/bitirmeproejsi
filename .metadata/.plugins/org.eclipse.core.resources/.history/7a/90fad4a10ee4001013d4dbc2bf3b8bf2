@@ -1,0 +1,128 @@
+package com.cvbuilder.service;
+
+import com.cvbuilder.dto.JobAnalysisResponse;
+import com.cvbuilder.dto.MarketAnalysisResponse;
+import com.cvbuilder.entity.JobPosting;
+import com.cvbuilder.entity.User;
+import com.cvbuilder.external.AiClient;
+import com.cvbuilder.external.JobScraperClient;
+import com.cvbuilder.repository.JobPostingRepository;
+import com.cvbuilder.repository.UserRepository;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.*;
+import java.util.stream.Collectors;
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class JobAnalysisServiceImpl implements JobAnalysisService {
+
+    private final UserRepository userRepository;
+    private final JobPostingRepository jobPostingRepository;
+    private final JobScraperClient scraper;
+    private final AiClient aiClient;
+
+    @Override
+    @Transactional
+    public JobAnalysisResponse analyzeJobPosting(Long userId, String url) {
+        User user = userRepository.findById(userId).orElseThrow();
+        Map<String, String> scrapedData = scraper.fetchJobData(url);
+        String jobContent = scrapedData.getOrDefault("jobContent", scrapedData.getOrDefault("fullText", ""));
+        return runComprehensiveAnalysis(user, jobContent, url);
+    }
+
+    @Override
+    @Transactional
+    public JobAnalysisResponse analyzeJobByRawText(Long userId, String jobContent) {
+        User user = userRepository.findById(userId).orElseThrow();
+        return runComprehensiveAnalysis(user, jobContent, "Manuel Giriş");
+    }
+
+    private JobAnalysisResponse runComprehensiveAnalysis(User user, String jobContent, String url) {
+        if (jobContent == null || jobContent.length() < 50) {
+            return JobAnalysisResponse.builder().formattedAnalysis("İçerik çekilemedi.").build();
+        }
+
+        // 1. AI Analizleri
+        Map<String, Object> aiDetailed = aiClient.analyzeJobPostingDetailed(jobContent);
+        String detailedReport = aiClient.analyzeJobSubmission(user.getProfile(), jobContent);
+
+        // 2. KRİTİK: Listeleri Güvenli Al (ClassCastException Çözümü)
+        List<String> jobSkills = safeGetList(aiDetailed, "technicalSkills");
+        List<String> responsibilities = safeGetList(aiDetailed, "responsibilities");
+
+        // 3. Beceri Eşleşme
+        List<String> userSkills = getUserSkillsNormalized(user);
+        List<String> matched = new ArrayList<>();
+        List<String> missing = new ArrayList<>();
+
+        for (String req : jobSkills) {
+            if (isUserHasSkill(userSkills, req)) matched.add(req);
+            else missing.add(req);
+        }
+
+        int score = jobSkills.isEmpty() ? 0 : (int) Math.round((matched.size() * 100.0) / jobSkills.size());
+
+        // 4. Veritabanına Kaydet
+        JobPosting jp = saveJobPosting(user, url, aiDetailed, jobContent, detailedReport);
+
+        // 5. TÜM BİLGİLERİ DTO'YA DOLDUR (Görseldeki alanlar)
+        return JobAnalysisResponse.builder()
+                .jobId(jp.getId())
+                .position(safeGetString(aiDetailed, "position", "Belirtilmemiş"))
+                .company(safeGetString(aiDetailed, "company", "Bilinmiyor"))
+                .location(safeGetString(aiDetailed, "location", "Belirtilmemiş"))
+                .workType(safeGetString(aiDetailed, "workType", "Belirtilmemiş"))
+                .experienceLevel(safeGetString(aiDetailed, "experienceLevel", "Belirtilmemiş"))
+                .educationLevel(safeGetString(aiDetailed, "educationLevel", "Belirtilmemiş"))
+                .summary(safeGetString(aiDetailed, "summary", ""))
+                .matchedSkills(matched)
+                .missingSkills(missing)
+                .matchScore(score)
+                .formattedAnalysis(detailedReport)
+                .responsibilities(responsibilities)
+                .build();
+    }
+
+    // Güvenli Liste Alma Metodu (Hatanın kesin çözümü)
+    @SuppressWarnings("unchecked")
+    private List<String> safeGetList(Map<String, Object> map, String key) {
+        Object obj = map.get(key);
+        if (obj instanceof List) return (List<String>) obj;
+        if (obj instanceof String) return Arrays.asList(obj.toString().split(","));
+        return new ArrayList<>();
+    }
+
+    private String safeGetString(Map<String, Object> map, String key, String defaultValue) {
+        Object val = map.get(key);
+        return (val != null && !val.toString().isBlank()) ? val.toString().trim() : defaultValue;
+    }
+
+    private JobPosting saveJobPosting(User user, String url, Map<String, Object> aiDetailed, String rawText, String report) {
+        String safeText = (rawText.length() > 4000) ? rawText.substring(0, 3995) + "..." : rawText;
+        return jobPostingRepository.save(JobPosting.builder()
+                .user(user).url(url).position(safeGetString(aiDetailed, "position", "Belirtilmemiş"))
+                .cleanedText(safeText).analysisReport(report).createdAt(new Date()).build());
+    }
+
+    private List<String> getUserSkillsNormalized(User user) {
+        if (user.getProfile() == null || user.getProfile().getSkills() == null) return new ArrayList<>();
+        return user.getProfile().getSkills().stream()
+                .map(s -> s.getSkillName().toLowerCase(Locale.forLanguageTag("tr")).trim())
+                .collect(Collectors.toList());
+    }
+
+    private boolean isUserHasSkill(List<String> userSkills, String req) {
+        String reqL = req.toLowerCase(Locale.forLanguageTag("tr")).trim();
+        return userSkills.stream().anyMatch(us -> us.contains(reqL) || reqL.contains(us));
+    }
+
+    @Override public List<JobPosting> getJobsByUserId(Long userId) { return jobPostingRepository.findByUserIdOrderByCreatedAtDesc(userId); }
+    @Override public JobPosting getJobById(Long jobId) { return jobPostingRepository.findById(jobId).orElseThrow(); }
+    @Override public JobAnalysisResponse analyzeJobPosting(Object o, String url) { return analyzeJobPosting((Long) o, url); }
+    @Override public MarketAnalysisResponse performMarketAnalysis(String a, Long u) { return null; }
+}

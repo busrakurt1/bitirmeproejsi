@@ -1,0 +1,16 @@
+package com.cvbuilder.repository;
+
+import com.cvbuilder.entity.GeneratedCv;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.List;
+import java.util.Optional;
+
+public interface GeneratedCvRepository extends JpaRepository<GeneratedCv, Long> {
+
+    List<GeneratedCv> findByUser_Id(Long userId);
+
+    List<GeneratedCv> findByUser_IdAndJobPosting_Id(Long userId, Long jobPostingId);
+
+    Optional<GeneratedCv> findByIdAndUser_Id(Long id, Long userId);
+}

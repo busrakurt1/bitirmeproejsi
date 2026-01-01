@@ -1,0 +1,98 @@
+package com.cvbuilder.external;
+
+import com.cvbuilder.dto.OptimizedCvItem;
+import com.cvbuilder.dto.UserCertificateDTO;
+import com.cvbuilder.dto.UserEducationDTO;
+import com.cvbuilder.dto.UserLanguageDTO;
+import com.cvbuilder.entity.JobPosting;
+import com.cvbuilder.entity.UserProfile;
+import com.cvbuilder.service.TranslationService;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+import java.util.*;
+import java.util.stream.Collectors;
+
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class AiClient {
+
+    private final TranslationService translationService;
+
+    /**
+     * İŞ ANALİZİ: Profil ile iş ilanını ATS kriterlerine göre karşılaştırır.
+     */
+    public String analyzeJobSubmission(UserProfile user, String rawJobText) {
+        String prompt = String.format("""
+            ADAY PROFİLİ: %s
+            İŞ İLANI: %s
+            GÖREVİN: Adayın bu işe uygunluğunu analiz et. Eşleşenleri ve eksikleri profesyonelce raporla.
+            """, formatUserProfile(user), rawJobText);
+        return translationService.generateContent(prompt);
+    }
+
+    /**
+     * PAZAR ANALİZİ: Toplu ilan verisi üzerinden trend belirler.
+     */
+    public String analyzeMarketWithAI(String area, List<JobPosting> allJobs, UserProfile user) {
+        String jobsSummary = allJobs.stream()
+                .map(j -> j.getPosition() + " - " + j.getRequiredSkills())
+                .collect(Collectors.joining("\n"));
+        
+        String prompt = String.format("""
+            HEDEF ALAN: %s
+            MEVCUT İLANLAR: %s
+            ADAY PROFİLİ: %s
+            GÖREVİN: Pazardaki en çok istenen 10 beceriyi belirle ve adaya gelişim yol haritası sun.
+            """, area, jobsSummary, formatUserProfile(user));
+        return translationService.generateContent(prompt);
+    }
+
+    /**
+     * CV OPTİMİZASYONU: Deneyimleri iş ilanına göre yeniden düzenler.
+     */
+    public List<OptimizedCvItem> optimizeExperiences(UserProfile profile, JobPosting job) {
+        if (profile.getExperiences() == null) return Collections.emptyList();
+        return profile.getExperiences().stream().map(exp -> {
+            String optimizedDesc = translationService.generateContent(
+                "Bu iş deneyimi açıklamasını şu iş ilanına göre ATS uyumlu hale getir: " + exp.getDescription()
+            );
+            return new OptimizedCvItem(exp.getPosition(), exp.getCompany(), 
+                                      exp.getStartDate() + " - " + exp.getEndDate(), 
+                                      Collections.singletonList(optimizedDesc));
+        }).collect(Collectors.toList());
+    }
+
+    // Diğer DTO dönüşümleri (Örnekleme amaçlı basitleştirilmiştir)
+    public List<UserEducationDTO> optimizeEducation(UserProfile p, JobPosting j) {
+        return p.getEducations().stream().map(e -> UserEducationDTO.builder()
+                .schoolName(e.getSchoolName()).department(e.getDepartment()).build()).collect(Collectors.toList());
+    }
+
+    public List<String> generateTailoredSummaries(UserProfile p, String context) {
+        String aiSummary = translationService.generateContent("Şu profile ve işe uygun 2 cümlelik özet yaz: " + context);
+        return Collections.singletonList(aiSummary);
+    }
+
+    public String getCareerAdvice(String title) {
+        return translationService.generateContent(title + " pozisyonu için kariyer tavsiyeleri ver.");
+    }
+
+    public String analyzeJobPostingUniversal(String text) {
+        String prompt = "Şu iş ilanını 'position', 'company', 'technicalSkills' (array) içeren JSON olarak döndür: " + text;
+        String res = translationService.generateContent(prompt);
+        return res != null ? res.replaceAll("```json|```", "").trim() : "{}";
+    }
+
+    private String formatUserProfile(UserProfile user) {
+        if (user == null) return "Profil Bilgisi Yok";
+        return String.format("Unvan: %s, Yetenekler: %s", user.getTitle(), 
+            user.getSkills().stream().map(s -> s.getSkillName()).collect(Collectors.joining(", ")));
+    }
+
+    // Gerekli diğer optimize metotları (Sertifika, Dil vb.) CvGeneratorServiceImpl'deki çağrılara göre eklenmelidir.
+    public List<OptimizedCvItem> optimizeProjects(UserProfile p, JobPosting j) { return Collections.emptyList(); }
+    public List<UserLanguageDTO> optimizeLanguages(UserProfile p, JobPosting j) { return Collections.emptyList(); }
+    public List<UserCertificateDTO> optimizeCertificates(UserProfile p, JobPosting j) { return Collections.emptyList(); }
+}

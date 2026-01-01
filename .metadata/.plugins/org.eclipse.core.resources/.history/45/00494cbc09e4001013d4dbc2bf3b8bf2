@@ -1,0 +1,322 @@
+package com.cvbuilder.external;
+
+import com.cvbuilder.dto.OptimizedCvItem;
+import com.cvbuilder.dto.UserCertificateDTO;
+import com.cvbuilder.dto.UserEducationDTO;
+import com.cvbuilder.dto.UserLanguageDTO;
+import com.cvbuilder.entity.JobPosting;
+import com.cvbuilder.entity.UserProfile;
+import com.cvbuilder.service.TranslationService;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+import java.util.*;
+import java.util.stream.Collectors;
+
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class AiClient {
+
+    private final TranslationService translationService;
+
+    /**
+     * İŞ ANALİZİ: Profil ile iş ilanını ATS kriterlerine göre karşılaştırır.
+     */
+    public String analyzeJobSubmission(UserProfile user, String rawJobText) {
+        String prompt = String.format("""
+            ADAY PROFİLİ: %s
+            İŞ İLANI: %s
+            GÖREVİN: Adayın bu işe uygunluğunu analiz et. Eşleşenleri ve eksikleri profesyonelce raporla.
+            """, formatUserProfile(user), rawJobText);
+        return translationService.generateContent(prompt);
+    }
+
+    /**
+     * PAZAR ANALİZİ: Toplu ilan verisi üzerinden trend belirler.
+     */
+    public String analyzeMarketWithAI(String area, List<JobPosting> allJobs, UserProfile user) {
+        String jobsSummary = allJobs.stream()
+                .map(j -> j.getPosition() + " - " + j.getRequiredSkills())
+                .collect(Collectors.joining("\n"));
+        
+        String prompt = String.format("""
+            HEDEF ALAN: %s
+            MEVCUT İLANLAR: %s
+            ADAY PROFİLİ: %s
+            GÖREVİN: Pazardaki en çok istenen 10 beceriyi belirle ve adaya gelişim yol haritası sun.
+            """, area, jobsSummary, formatUserProfile(user));
+        return translationService.generateContent(prompt);
+    }
+
+    /**
+     * CV OPTİMİZASYONU: Deneyimleri iş ilanına göre yeniden düzenler.
+     */
+    public List<OptimizedCvItem> optimizeExperiences(UserProfile profile, JobPosting job) {
+        if (profile.getExperiences() == null) return Collections.emptyList();
+        return profile.getExperiences().stream().map(exp -> {
+            String optimizedDesc = translationService.generateContent(
+                "Bu iş deneyimi açıklamasını şu iş ilanına göre ATS uyumlu hale getir: " + exp.getDescription()
+            );
+            return new OptimizedCvItem(exp.getPosition(), exp.getCompany(), 
+                                      exp.getStartDate() + " - " + exp.getEndDate(), 
+                                      Collections.singletonList(optimizedDesc));
+        }).collect(Collectors.toList());
+    }
+
+    // Diğer DTO dönüşümleri (Örnekleme amaçlı basitleştirilmiştir)
+    public List<UserEducationDTO> optimizeEducation(UserProfile p, JobPosting j) {
+        return p.getEducations().stream().map(e -> UserEducationDTO.builder()
+                .schoolName(e.getSchoolName()).department(e.getDepartment()).build()).collect(Collectors.toList());
+    }
+
+    public List<String> generateTailoredSummaries(UserProfile p, String context) {
+        String aiSummary = translationService.generateContent("Şu profile ve işe uygun 2 cümlelik özet yaz: " + context);
+        return Collections.singletonList(aiSummary);
+    }
+
+    public String getCareerAdvice(String title) {
+        return translationService.generateContent(title + " pozisyonu için kariyer tavsiyeleri ver.");
+    }
+
+    /**
+     * İŞ İLANI DETAYLI ANALİZİ - TÜM BİLGİLERİ ALMAK İÇİN
+     */
+    public Map<String, Object> analyzeJobPostingDetailed(String rawJobText) {
+        if (rawJobText == null || rawJobText.isBlank()) {
+            return createEmptyResponse();
+        }
+
+        // DETAYLI JSON şeması ile prompt
+        String prompt = String.format(
+                "SEN BİR İŞ İLANI ANALİZ MAKİNESİSİN. Aşağıdaki iş ilanını analiz et ve SADECE JSON DÖNDÜR. " +
+                "Yanıtında asla açıklama yapma, giriş cümlesi yazma. " +
+                "Yanıtın doğrudan '{' ile başlamalı ve '}' ile bitmeli.\n\n" +
+                
+                "ANALİZ EDİLECEK İŞ İLANI METNİ:\n%s\n\n" +
+                
+                "JSON ŞEMASI - TÜM BU ALANLARI DOLDUR:\n" +
+                "{\n" +
+                "  \"position\": \"Pozisyon adı (örn: Azure Cloud Stajyeri, Backend Developer)\",\n" +
+                "  \"company\": \"Şirket adı (eğer yoksa 'Bilinmiyor' yaz)\",\n" +
+                "  \"location\": \"Konum/Şehir (eğer yoksa 'Belirtilmemiş' yaz)\",\n" +
+                "  \"workType\": \"Çalışma tipi (Tam zamanlı, Yarı zamanlı, Staj, Remote vs.)\",\n" +
+                "  \"experienceLevel\": \"Deneyim seviyesi (Stajyer, Junior, Mid, Senior, Yönetici)\",\n" +
+                "  \"educationLevel\": \"Eğitim seviyesi (Lisans, Yüksek Lisans, Doktora, Lise)\",\n" +
+                "  \"technicalSkills\": [\"Azure\", \"Python\", \".NET\", \"DevOps\", \"...\"],\n" +
+                "  \"softSkills\": [\"Takım çalışması\", \"İletişim\", \"...\"],\n" +
+                "  \"responsibilities\": [\"Görev 1\", \"Görev 2\", \"...\"],\n" +
+                "  \"requirements\": [\"Şart 1\", \"Şart 2\", \"...\"],\n" +
+                "  \"preferredQualifications\": [\"Tercih edilen 1\", \"Tercih edilen 2\", \"...\"],\n" +
+                "  \"summary\": \"İşin 2-3 cümlelik özeti\",\n" +
+                "  \"matchScore\": 0,\n" +
+                "  \"missingSkills\": [\"Eksik yetenek 1\", \"Eksik yetenek 2\", \"...\"]\n" +
+                "}\n\n" +
+                
+                "ÖNEMLİ KURALLAR:\n" +
+                "1. Eğer metinde bilgi yoksa 'Belirtilmemiş' veya [] kullan\n" +
+                "2. technicalSkills'i metinden çıkar\n" +
+                "3. matchScore her zaman 0 olarak başlasın\n" +
+                "4. missingSkills'i şimdilik boş bırak\n" +
+                "5. SADECE JSON döndür, başka hiçbir şey yazma!",
+                rawJobText
+        );
+
+        try {
+            String response = translationService.generateContent(prompt);
+            
+            if (response == null || response.trim().isEmpty()) {
+                return createEmptyResponse();
+            }
+            
+            // JSON'ı temizle
+            String cleanJson = extractJsonFromResponse(response);
+            
+            // JSON'ı Map'e çevir
+            return parseJsonToMap(cleanJson);
+            
+        } catch (Exception e) {
+            log.error("AI Detaylı Analiz Hatası: ", e);
+            return createEmptyResponse();
+        }
+    }
+
+    /**
+     * ESKİ METOD - Backward compatibility için
+     */
+    public String analyzeJobPostingUniversal(String rawJobText) {
+        Map<String, Object> detailed = analyzeJobPostingDetailed(rawJobText);
+        
+        // Eski formata çevir
+        Map<String, Object> simple = new HashMap<>();
+        simple.put("position", detailed.getOrDefault("position", ""));
+        simple.put("company", detailed.getOrDefault("company", ""));
+        simple.put("technicalSkills", detailed.getOrDefault("technicalSkills", new ArrayList<>()));
+        simple.put("summary", detailed.getOrDefault("summary", ""));
+        
+        return convertMapToJson(simple);
+    }
+
+    /**
+     * KARŞILAŞTIRMA ANALİZİ: Kullanıcı profili ile iş ilanını karşılaştır
+     */
+    public Map<String, Object> analyzeJobMatch(UserProfile user, String rawJobText) {
+        // 1. İş ilanını analiz et
+        Map<String, Object> jobAnalysis = analyzeJobPostingDetailed(rawJobText);
+        
+        // 2. Kullanıcı yeteneklerini al
+        List<String> userSkills = user.getSkills().stream()
+                .map(s -> s.getSkillName().toLowerCase())
+                .collect(Collectors.toList());
+        
+        // 3. İş ilanındaki yetenekleri al
+        @SuppressWarnings("unchecked")
+        List<String> jobSkills = (List<String>) jobAnalysis.getOrDefault("technicalSkills", new ArrayList<>());
+        List<String> jobSkillsLower = jobSkills.stream()
+                .map(String::toLowerCase)
+                .collect(Collectors.toList());
+        
+        // 4. Eşleşen yetenekleri bul
+        List<String> matchingSkills = new ArrayList<>();
+        List<String> missingSkills = new ArrayList<>();
+        
+        for (String jobSkill : jobSkillsLower) {
+            if (userSkills.contains(jobSkill)) {
+                matchingSkills.add(jobSkill);
+            } else {
+                missingSkills.add(jobSkill);
+            }
+        }
+        
+        // 5. Match score hesapla
+        double matchScore = jobSkills.isEmpty() ? 0 : 
+            (double) matchingSkills.size() / jobSkills.size() * 100;
+        
+        // 6. Sonuçları güncelle
+        jobAnalysis.put("matchingSkills", matchingSkills);
+        jobAnalysis.put("missingSkills", missingSkills);
+        jobAnalysis.put("matchScore", (int) matchScore);
+        jobAnalysis.put("userSkills", userSkills);
+        
+        return jobAnalysis;
+    }
+
+    // Yardımcı metodlar
+    private Map<String, Object> createEmptyResponse() {
+        Map<String, Object> empty = new HashMap<>();
+        empty.put("position", "Belirtilmemiş");
+        empty.put("company", "Bilinmiyor");
+        empty.put("location", "Belirtilmemiş");
+        empty.put("workType", "Belirtilmemiş");
+        empty.put("experienceLevel", "Belirtilmemiş");
+        empty.put("educationLevel", "Belirtilmemiş");
+        empty.put("technicalSkills", new ArrayList<>());
+        empty.put("softSkills", new ArrayList<>());
+        empty.put("responsibilities", new ArrayList<>());
+        empty.put("requirements", new ArrayList<>());
+        empty.put("preferredQualifications", new ArrayList<>());
+        empty.put("summary", "");
+        empty.put("matchScore", 0);
+        empty.put("missingSkills", new ArrayList<>());
+        return empty;
+    }
+    
+    private String extractJsonFromResponse(String response) {
+        if (response == null) return "{}";
+        
+        // ```json ... ``` bloğunu temizle
+        response = response.replaceAll("```json\\s*", "");
+        response = response.replaceAll("```\\s*", "");
+        response = response.replaceAll("(?s)^.*?(\\{.*\\}).*$", "$1");
+        
+        return response.trim();
+    }
+    
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> parseJsonToMap(String json) {
+        try {
+            // Basit JSON parsing (gerçek uygulamada Jackson/Gson kullanın)
+            if (json.startsWith("{") && json.endsWith("}")) {
+                json = json.substring(1, json.length() - 1);
+                Map<String, Object> map = new HashMap<>();
+                
+                String[] pairs = json.split(",");
+                for (String pair : pairs) {
+                    String[] keyValue = pair.split(":", 2);
+                    if (keyValue.length == 2) {
+                        String key = keyValue[0].trim().replaceAll("\"", "");
+                        String value = keyValue[1].trim().replaceAll("\"", "");
+                        
+                        // Array değerleri için
+                        if (value.startsWith("[") && value.endsWith("]")) {
+                            value = value.substring(1, value.length() - 1);
+                            List<String> list = Arrays.stream(value.split(","))
+                                    .map(String::trim)
+                                    .map(s -> s.replaceAll("\"", ""))
+                                    .filter(s -> !s.isEmpty())
+                                    .collect(Collectors.toList());
+                            map.put(key, list);
+                        } else {
+                            map.put(key, value);
+                        }
+                    }
+                }
+                return map;
+            }
+        } catch (Exception e) {
+            log.warn("JSON parse hatası: {}", e.getMessage());
+        }
+        
+        return createEmptyResponse();
+    }
+    
+    private String convertMapToJson(Map<String, Object> map) {
+        StringBuilder json = new StringBuilder("{");
+        boolean first = true;
+        
+        for (Map.Entry<String, Object> entry : map.entrySet()) {
+            if (!first) json.append(",");
+            json.append("\"").append(entry.getKey()).append("\":");
+            
+            Object value = entry.getValue();
+            if (value instanceof List) {
+                @SuppressWarnings("unchecked")
+                List<String> list = (List<String>) value;
+                json.append("[");
+                boolean firstItem = true;
+                for (String item : list) {
+                    if (!firstItem) json.append(",");
+                    json.append("\"").append(item).append("\"");
+                    firstItem = false;
+                }
+                json.append("]");
+            } else {
+                json.append("\"").append(value.toString()).append("\"");
+            }
+            
+            first = false;
+        }
+        
+        json.append("}");
+        return json.toString();
+    }
+
+    private String formatUserProfile(UserProfile user) {
+        if (user == null) return "Profil Bilgisi Yok";
+        return String.format("Unvan: %s, Yetenekler: %s", user.getTitle(), 
+            user.getSkills().stream().map(s -> s.getSkillName()).collect(Collectors.joining(", ")));
+    }
+
+    // Gerekli diğer optimize metotları
+    public List<OptimizedCvItem> optimizeProjects(UserProfile p, JobPosting j) { 
+        return Collections.emptyList(); 
+    }
+    
+    public List<UserLanguageDTO> optimizeLanguages(UserProfile p, JobPosting j) { 
+        return Collections.emptyList(); 
+    }
+    
+    public List<UserCertificateDTO> optimizeCertificates(UserProfile p, JobPosting j) { 
+        return Collections.emptyList(); 
+    }
+}

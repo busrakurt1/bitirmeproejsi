@@ -1,0 +1,362 @@
+package com.cvbuilder.external;
+
+import org.jsoup.Connection;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.select.Elements;
+import org.springframework.stereotype.Component;
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+
+import lombok.extern.slf4j.Slf4j;
+
+@Slf4j
+@Component
+public class JobScraperClient {
+
+    private static final Map<String, Map<String, String>> SITE_SELECTORS = new HashMap<>();
+    
+    static {
+        // Kariyer.net için DETAYLI selector map
+        Map<String, String> kariyerSelectors = new HashMap<>();
+        
+        // Ana içerik alanları
+        kariyerSelectors.put("jobContent", 
+            "div.job-detail-content, " +
+            "section.job-detail, " +
+            "div[data-testid='job-detail-content'], " +
+            "div.description, " +
+            "div.job-description, " +
+            "main > div, " +
+            "article");
+        
+        // Pozisyon başlığı
+        kariyerSelectors.put("position",
+            "h1.job-title, " +
+            "h1[class*='title'], " +
+            "h1, " +
+            "title");
+        
+        // Şirket adı
+        kariyerSelectors.put("company",
+            "div.company-name, " +
+            "a[class*='company'], " +
+            "span.company, " +
+            "meta[name='company']");
+        
+        // Lokasyon
+        kariyerSelectors.put("location",
+            "div.location, " +
+            "span[class*='location'], " +
+            "i[class*='pin'] + span, " +
+            "meta[name='location']");
+        
+        // Deneyim
+        kariyerSelectors.put("experience",
+            "div.experience, " +
+            "span[class*='experience'], " +
+            "i[class*='briefcase'] + span");
+        
+        // Eğitim
+        kariyerSelectors.put("education",
+            "div.education, " +
+            "span[class*='education'], " +
+            "i[class*='graduation'] + span");
+        
+        // İş Tanımı (ana metin)
+        kariyerSelectors.put("jobDescription",
+            "div[class*='description-content'], " +
+            "div.job-requirements, " +
+            "div.qualifications, " +
+            "div.responsibilities");
+        
+        SITE_SELECTORS.put("kariyer.net", kariyerSelectors);
+    }
+
+    public Map<String, String> fetchJobData(String url) {
+        Map<String, String> result = new HashMap<>();
+        log.info("🌐 İlan çekiliyor: {}", url);
+        
+        try {
+            // Daha agresif bir user-agent ve header seti
+            Connection.Response response = Jsoup.connect(url)
+                    .userAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
+                    .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+                    .header("Accept-Language", "tr-TR,tr;q=0.8,en-US;q=0.5,en;q=0.3")
+                    .header("Accept-Encoding", "gzip, deflate, br")
+                    .header("DNT", "1")
+                    .header("Connection", "keep-alive")
+                    .header("Upgrade-Insecure-Requests", "1")
+                    .header("Sec-Fetch-Dest", "document")
+                    .header("Sec-Fetch-Mode", "navigate")
+                    .header("Sec-Fetch-Site", "none")
+                    .header("Sec-Fetch-User", "?1")
+                    .referrer("https://www.google.com")
+                    .ignoreContentType(true)
+                    .ignoreHttpErrors(true)
+                    .followRedirects(true)
+                    .timeout(30000)
+                    .maxBodySize(0)
+                    .execute();
+
+            Document doc = response.parse();
+            
+            // DOM yapısını debug için logla
+            logDomStructure(doc);
+            
+            // Siteye göre farklı parser kullan
+            if (url.contains("kariyer.net")) {
+                result = parseKariyerNet(doc, url);
+            } else {
+                result = parseGenericSite(doc, url);
+            }
+            
+            // Eğer içerik hala boşsa, body'nin tamamını al
+            if (result.getOrDefault("jobContent", "").length() < 100) {
+                log.warn("⚠️ Özel parser başarısız oldu, body tamamen çekiliyor...");
+                String fullText = extractCompletePageText(doc);
+                result.put("jobContent", fullText);
+            }
+            
+            // Minimum içerik kontrolü
+            if (result.getOrDefault("jobContent", "").length() < 50) {
+                throw new IllegalArgumentException("İlan içeriği yeterli değil. Sayfa yapısı değişmiş olabilir.");
+            }
+            
+            log.info("✅ İlan içeriği başarıyla çekildi ({} karakter)", 
+                     result.getOrDefault("jobContent", "").length());
+            return result;
+
+        } catch (IOException e) {
+            log.error("❌ İlan çekme hatası: {}", e.getMessage(), e);
+            throw new RuntimeException("İlan verisi çekilemedi: " + e.getMessage());
+        }
+    }
+    
+    private Map<String, String> parseKariyerNet(Document doc, String url) {
+        Map<String, String> result = new HashMap<>();
+        
+        // 1. Önce tüm metni topla
+        StringBuilder allText = new StringBuilder();
+        
+        // 2. Sayfa başlığı
+        String title = doc.title();
+        result.put("pageTitle", title);
+        
+        // Pozisyonu title'dan çıkar
+        if (title.contains("|")) {
+            result.put("position", title.split("\\|")[0].trim());
+        }
+        
+        // 3. Ana içerik alanlarını ara
+        Map<String, String> selectors = SITE_SELECTORS.get("kariyer.net");
+        
+        for (Map.Entry<String, String> entry : selectors.entrySet()) {
+            String key = entry.getKey();
+            String selector = entry.getValue();
+            
+            if (key.equals("jobContent")) {
+                // Ana iş içeriği için tüm seçenekleri dene
+                String[] selectorList = selector.split(", ");
+                for (String sel : selectorList) {
+                    Elements elements = doc.select(sel);
+                    if (!elements.isEmpty()) {
+                        for (Element el : elements) {
+                            String text = el.text();
+                            if (text.length() > 100) { // Anlamlı içerik
+                                allText.append(text).append("\n\n");
+                                log.debug("✅ Ana içerik bulundu: {} ({} karakter)", sel, text.length());
+                                break;
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Diğer bilgiler için
+                String[] selectorList = selector.split(", ");
+                for (String sel : selectorList) {
+                    Elements elements = doc.select(sel);
+                    if (!elements.isEmpty()) {
+                        result.put(key, elements.first().text());
+                        log.debug("✅ {} bulundu: {} = {}", key, sel, elements.first().text());
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // 4. Meta tag'lardan bilgi çek
+        extractMetaInfo(doc, result);
+        
+        // 5. Tablo yapılarını ara (Kariyer.net genellikle tablo kullanır)
+        Elements tables = doc.select("table, dl, ul.list-group, div.list-item");
+        for (Element table : tables) {
+            String tableText = table.text();
+            if (tableText.length() > 50) {
+                allText.append(tableText).append("\n\n");
+            }
+        }
+        
+        // 6. Tüm <p> tag'larını topla
+        Elements paragraphs = doc.select("p");
+        for (Element p : paragraphs) {
+            String text = p.text();
+            if (text.length() > 30) { // Kısa metinleri atla
+                allText.append(text).append("\n\n");
+            }
+        }
+        
+        // 7. Tüm <li> tag'larını topla (madde işaretleri)
+        Elements listItems = doc.select("li");
+        for (Element li : listItems) {
+            String text = li.text();
+            if (text.length() > 20) {
+                allText.append("• ").append(text).append("\n");
+            }
+        }
+        
+        result.put("jobContent", allText.toString().trim());
+        
+        return result;
+    }
+    
+    private Map<String, String> parseGenericSite(Document doc, String url) {
+        Map<String, String> result = new HashMap<>();
+        
+        result.put("pageTitle", doc.title());
+        
+        // Genel selector'lar
+        String[] contentSelectors = {
+            "main", "article", "div.content", "div.main-content",
+            "section", "div.container", "div.wrapper",
+            "div[role='main']", "div#content"
+        };
+        
+        StringBuilder content = new StringBuilder();
+        
+        for (String selector : contentSelectors) {
+            Elements elements = doc.select(selector);
+            if (!elements.isEmpty()) {
+                for (Element el : elements) {
+                    String text = cleanText(el.text());
+                    if (text.length() > 200) {
+                        content.append(text).append("\n\n");
+                    }
+                }
+            }
+        }
+        
+        // Eğer hala içerik yoksa body'yi al
+        if (content.length() < 100) {
+            content.append(cleanText(doc.body().text()));
+        }
+        
+        result.put("jobContent", content.toString());
+        
+        return result;
+    }
+    
+    private void extractMetaInfo(Document doc, Map<String, String> result) {
+        // Meta description
+        Element metaDesc = doc.select("meta[name=description]").first();
+        if (metaDesc != null) {
+            result.putIfAbsent("description", metaDesc.attr("content"));
+        }
+        
+        // Open Graph bilgileri
+        Element ogTitle = doc.select("meta[property='og:title']").first();
+        if (ogTitle != null) {
+            result.putIfAbsent("position", ogTitle.attr("content"));
+        }
+        
+        Element ogDesc = doc.select("meta[property='og:description']").first();
+        if (ogDesc != null) {
+            result.putIfAbsent("description", ogDesc.attr("content"));
+        }
+        
+        Element ogSite = doc.select("meta[property='og:site_name']").first();
+        if (ogSite != null) {
+            result.putIfAbsent("company", ogSite.attr("content"));
+        }
+    }
+    
+    private String extractCompletePageText(Document doc) {
+        // Tüm sayfayı temizleyerek al
+        Element body = doc.body();
+        
+        if (body == null) {
+            return doc.text();
+        }
+        
+        // Klon oluştur
+        Element cleanBody = body.clone();
+        
+        // Gereksiz elementleri kaldır
+        cleanBody.select("script, style, noscript, iframe, svg, img, link, meta").remove();
+        
+        // Navigasyon vs. kaldır
+        cleanBody.select("nav, header, footer, aside, .nav, .menu, .sidebar, .ads").remove();
+        
+        // Metni al ve temizle
+        String text = cleanBody.text();
+        
+        // Tekrarlanan boşlukları ve satırları temizle
+        text = text.replaceAll("\\s+", " ");
+        text = text.replaceAll("(?m)^[ \t]*\r?\n", "");
+        
+        return text.trim();
+    }
+    
+    private String cleanText(String text) {
+        if (text == null) return "";
+        
+        // Temizleme işlemleri
+        text = text.replaceAll("\\s+", " ");
+        text = text.replaceAll("[\\r\\n]+", "\n");
+        text = text.replaceAll("\\n\\s*\\n+", "\n\n");
+        
+        return text.trim();
+    }
+    
+    private void logDomStructure(Document doc) {
+        // Debug için DOM yapısını logla
+        log.debug("=== DOM YAPISI ANALİZİ ===");
+        log.debug("Title: {}", doc.title());
+        
+        // Tüm h1-h6 tag'larını logla
+        for (int i = 1; i <= 6; i++) {
+            Elements headers = doc.select("h" + i);
+            if (!headers.isEmpty()) {
+                log.debug("H{} tags: {}", i, headers.eachText());
+            }
+        }
+        
+        // Tüm section ve article tag'larını logla
+        Elements sections = doc.select("section, article, main");
+        log.debug("Section/Article/Main count: {}", sections.size());
+        
+        // Tüm div'lerin class'larını logla (ilk 10)
+        Elements divs = doc.select("div[class]");
+        Set<String> uniqueClasses = new HashSet<>();
+        for (int i = 0; i < Math.min(divs.size(), 10); i++) {
+            uniqueClasses.add(divs.get(i).className());
+        }
+        log.debug("Unique div classes (first 10): {}", uniqueClasses);
+        
+        // Meta tag bilgileri
+        Elements metaTags = doc.select("meta[name], meta[property]");
+        log.debug("Meta tags count: {}", metaTags.size());
+        for (Element meta : metaTags) {
+            String name = meta.attr("name");
+            String property = meta.attr("property");
+            String content = meta.attr("content");
+            if (!content.isEmpty()) {
+                log.debug("Meta: name={}, property={}, content={}", name, property, content);
+            }
+        }
+    }
+}

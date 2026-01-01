@@ -1,0 +1,254 @@
+package com.cvbuilder.external;
+
+import com.cvbuilder.dto.*;
+import com.cvbuilder.entity.*;
+import com.cvbuilder.repository.JobPostingRepository;
+import com.cvbuilder.service.TranslationService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+
+import java.util.*;
+import java.util.stream.Collectors;
+
+@Component
+public class AiClient {
+
+    private static final Logger log = LoggerFactory.getLogger(AiClient.class);
+    private final TranslationService translationService;
+    private final JobPostingRepository jobPostingRepository;
+
+    @Autowired
+    public AiClient(TranslationService translationService, JobPostingRepository jobPostingRepository) {
+        this.translationService = translationService;
+        this.jobPostingRepository = jobPostingRepository;
+    }
+
+    // =========================================================
+    // 🌟 1. ANA ANALİZ METODU (BU METOT GÜNCELLENDİ)
+    // =========================================================
+    public String analyzeJobSubmission(UserProfile user, String rawJobText) {
+        // Kullanıcı profilini (Diller dahil!) metne döküyoruz
+        String userContext = formatUserProfile(user);
+
+        // Prompt'u hazırlıyoruz
+        String prompt = String.format(
+            "SEN BİR İK UZMANI VE TEKNİK ANALİSTSİN.\n" +
+            "Aşağıdaki İŞ İLANI ile ADAY PROFİLİNİ karşılaştır ve analiz et.\n\n" +
+            "--- ADAY PROFİLİ ---\n%s\n\n" +
+            "--- İŞ İLANI ---\n%s\n\n" +
+            "GÖREVLER:\n" +
+            "1. İlanın temel bilgilerini çıkar (Firma, Pozisyon, Konum).\n" +
+            "2. Adayın yeteneklerini VE DİLLERİNİ ilanla kıyasla.\n" +
+            "⚠️ ÖNEMLİ KURAL: Adayın profilindeki diller (Örn: 'İNGİLİZCE') ile ilandaki diller (Örn: 'English', 'İngilizce') eşleşiyorsa bunu KESİNLİKLE 'Mevcut' olarak işaretle. Büyük/küçük harf duyarlılığı yapma.\n" +
+            "3. Eksik olanları ve tam eşleşenleri belirle.\n\n" +
+            "İSTENEN ÇIKTI FORMATI (Aynen bu formatı kullan, emojileri silme):\n" +
+            "Pozisyon Detayları: İlan başlığı + pozisyon seviyesi (Junior/Mid/Senior)" +
+            "**🏢 Firma:** (Firma Adı)\n" +
+            "**📍 Konum:** (Şehir/İlçe)\n" +
+            "**💼 Çalışma Tipi:** (Tam Zamanlı/Hibrit vb.)\n\n" +
+            "#### 🛠 **Mesleki Gereklilikler**\n" +
+            "- ☑ [Adayda Olan Yetenek/Dil]\n" +
+            "- ❌ **[Adayda Olmayan Yetenek/Dil]** (Eksik)\n\n" +
+            "#### 📋 **Sorumluluklar**\n" +
+            "- (İlandaki sorumlulukları maddeler halinde özetle)\n",
+            userContext,
+            rawJobText
+        );
+
+        try {
+            return translationService.generateContent(prompt);
+        } catch (Exception e) {
+            log.error("AI Analiz Hatası: ", e);
+            return "Analiz servisine ulaşılamadı.";
+        }
+    }
+
+    // =========================================================
+    // 🌟 2. YARDIMCI METOT: Profil Formatlama (Dilleri Ekledik!)
+    // =========================================================
+    private String formatUserProfile(UserProfile user) {
+        if (user == null) return "Anonim Kullanıcı";
+        
+        StringBuilder sb = new StringBuilder();
+        
+        // 1. Yetenekleri Ekle
+        if (user.getSkills() != null && !user.getSkills().isEmpty()) {
+            String skills = user.getSkills().stream()
+                .map(UserSkill::getSkillName)
+                .collect(Collectors.joining(", "));
+            sb.append("Teknik Yetenekler: ").append(skills).append("\n");
+        }
+        
+        // 2. DİLLERİ EKLE (Sorunun Çözümü Burası)
+        if (user.getLanguages() != null && !user.getLanguages().isEmpty()) {
+            String langs = user.getLanguages().stream()
+                .map(l -> l.getLanguage() + " (Seviye: " + l.getLevel() + ")")
+                .collect(Collectors.joining(", "));
+            sb.append("Yabancı Diller: ").append(langs).append("\n");
+        } else {
+            sb.append("Yabancı Diller: Belirtilmemiş\n");
+        }
+        
+        // 3. Deneyim Özeti
+        if (user.getTotalExperienceYear() != null) {
+            sb.append("Toplam Deneyim: ").append(user.getTotalExperienceYear()).append(" Yıl\n");
+        }
+
+        return sb.toString();
+    }
+
+    // =========================================================
+    // 3. JSON ANALİZİ (Eski veya Alternatif Kullanım İçin)
+    // =========================================================
+    public String analyzeJobPostingUniversal(String rawJobText) {
+        String prompt = String.format(
+            "Bu iş ilanını analiz et ve sadece JSON döndür:\n%s\n" +
+            "Format: { \"position\": \"...\", \"technicalSkills\": [\"...\"], ... }",
+            rawJobText
+        );
+        try {
+            String response = translationService.generateContent(prompt);
+            return response != null ? response.replaceAll("```json|```", "").trim() : "{}";
+        } catch (Exception e) {
+            return "{}";
+        }
+    }
+
+    // =========================================================
+    // 4. KARİYER TAVSİYESİ (Sektörel Analiz)
+    // =========================================================
+    public String getCareerAdvice(String jobTitle) {
+        if (jobTitle == null || jobTitle.isBlank()) return "Tavsiye oluşturulamadı.";
+        String prompt = "Kariyer danışmanı olarak '" + jobTitle + "' pozisyonu için trendleri ve gelişim önerilerini Türkçe maddeler halinde yaz.";
+        try {
+            return translationService.generateContent(prompt);
+        } catch (Exception e) {
+            return "Servis meşgul.";
+        }
+    }
+
+    // =========================================================
+    // 5. CV OPTİMİZASYON METOTLARI
+    // =========================================================
+
+    public List<String> generateTailoredSummaries(UserProfile profile, String jobContext) {
+        String rawTitle = profile != null ? safe(profile.getTitle()) : "Profesyonel";
+        String userTitle = toTitleCase(rawTitle);
+        String skills = getPrioritizedSkills(profile, jobContext);
+        int years = (profile != null && profile.getTotalExperienceYear() != null) ? profile.getTotalExperienceYear() : 0;
+
+        List<String> summaries = new ArrayList<>();
+        summaries.add(String.format("%s deneyime sahip bir %s olarak, **%s** alanlarındaki yetkinliğimle değer katmayı hedefliyorum.", 
+            years > 0 ? years + " yıl" : "Yeni mezun", userTitle, skills));
+        
+        // AI Summary
+        String aiSummary = generateCreativeAiSummary(userTitle, skills, years);
+        if (!aiSummary.isEmpty()) summaries.add(aiSummary);
+
+        return summaries;
+    }
+
+    public List<OptimizedCvItem> optimizeExperiences(UserProfile profile, JobPosting job) {
+        if (profile == null || profile.getExperiences() == null) return Collections.emptyList();
+        String jobSkills = (job != null) ? safe(job.getRequiredSkills()) : "";
+
+        return profile.getExperiences().stream().map(exp -> {
+            String desc = safe(exp.getDescription());
+            if (desc.length() > 10) desc = fixGrammarStrict(desc);
+            
+            String matched = findIntersection(desc, jobSkills);
+            if (!matched.isEmpty()) {
+                desc += " Bu görevde **" + matched + "** yetkinliklerini aktif olarak kullandım.";
+            }
+            
+            return new OptimizedCvItem(
+                safe(exp.getPosition()), 
+                safe(exp.getCompany()), 
+                formatDateRange(exp.getStartDate(), exp.getEndDate()), 
+                List.of(desc)
+            );
+        }).collect(Collectors.toList());
+    }
+
+    public List<OptimizedCvItem> optimizeProjects(UserProfile profile, JobPosting job) {
+        if (profile == null || profile.getProjects() == null) return Collections.emptyList();
+        return profile.getProjects().stream().map(p -> new OptimizedCvItem(
+                safe(p.getProjectName()), "Proje", 
+                formatDateRange(p.getStartDate(), p.getIsOngoing() ? null : p.getEndDate()), 
+                List.of(fixGrammarStrict(safe(p.getDescription())))
+        )).collect(Collectors.toList());
+    }
+    
+    // DTO Helper Methods
+    public List<UserEducationDTO> optimizeEducation(UserProfile profile, JobPosting job) {
+        if (profile == null || profile.getEducations() == null) return Collections.emptyList();
+        return profile.getEducations().stream().map(e -> UserEducationDTO.builder()
+                .id(e.getId())
+                .schoolName(fixGrammarStrict(safe(e.getSchoolName())))
+                .department(fixGrammarStrict(safe(e.getDepartment())))
+                .degree(safe(e.getDegree()))
+                .startYear(safe(e.getStartYear()))
+                .graduationYear(e.getEndYear())
+                .gpa(safe(e.getGpa()))
+                .build()).collect(Collectors.toList());
+    }
+
+    public List<UserLanguageDTO> optimizeLanguages(UserProfile profile, JobPosting job) {
+        if(profile == null || profile.getLanguages() == null) return Collections.emptyList();
+        return profile.getLanguages().stream().map(l -> UserLanguageDTO.builder()
+                .id(l.getId()).language(safe(l.getLanguage())).level(safe(l.getLevel())).build()).collect(Collectors.toList());
+    }
+
+    public List<UserCertificateDTO> optimizeCertificates(UserProfile profile, JobPosting job) {
+        if(profile == null || profile.getCertificates() == null) return Collections.emptyList();
+        return profile.getCertificates().stream().map(c -> UserCertificateDTO.builder()
+                .id(c.getId()).name(safe(c.getName())).issuer(safe(c.getIssuer())).date(safe(c.getDate())).url(safe(c.getUrl())).build()).collect(Collectors.toList());
+    }
+
+    // --- YARDIMCI METOTLAR ---
+
+    private String getPrioritizedSkills(UserProfile profile, String jobContext) {
+        if (profile == null || profile.getSkills() == null) return "Mesleki Yetkinlikler";
+        return profile.getSkills().stream().limit(5).map(UserSkill::getSkillName).collect(Collectors.joining(", "));
+    }
+
+    private String generateCreativeAiSummary(String title, String skills, int years) {
+        try {
+            String res = translationService.generateContent(String.format("Bir %s için %d yıl deneyimli, şu yeteneklere sahip: %s. Kısa özet yaz.", title, years, skills));
+            return res != null ? res.replace("\"", "").trim() : "";
+        } catch (Exception e) { return ""; }
+    }
+
+    private String fixGrammarStrict(String text) {
+        if (text == null || text.length() < 5) return text;
+        try {
+            String res = translationService.generateContent("Metni dilbilgisi kurallarına göre düzelt: " + text);
+            return res != null ? res.trim() : text;
+        } catch (Exception e) { return text; }
+    }
+
+    private String findIntersection(String text, String skills) {
+        if (text == null || skills == null) return "";
+        Set<String> match = new HashSet<>();
+        String tLower = text.toLowerCase(Locale.ENGLISH);
+        for (String s : skills.split("[,;]")) {
+            if (tLower.contains(s.trim().toLowerCase(Locale.ENGLISH))) match.add(s.trim());
+        }
+        return String.join(", ", match);
+    }
+
+    private String toTitleCase(String input) {
+        if (input == null || input.isEmpty()) return "";
+        return Arrays.stream(input.trim().split("\\s+"))
+                .map(w -> w.isEmpty() ? "" : Character.toUpperCase(w.charAt(0)) + w.substring(1).toLowerCase(Locale.forLanguageTag("tr")))
+                .collect(Collectors.joining(" "));
+    }
+
+    private String safe(String text) { return text != null ? text : ""; }
+
+    private String formatDateRange(String start, String end) {
+        return (start != null ? start : "") + (end != null ? " - " + end : " - Devam Ediyor");
+    }
+}

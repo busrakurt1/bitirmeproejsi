@@ -1,0 +1,131 @@
+package com.cvbuilder.external;
+
+import org.jsoup.Connection;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.select.Elements;
+import org.springframework.stereotype.Component;
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
+import lombok.extern.slf4j.Slf4j;
+
+@Slf4j
+@Component
+public class JobScraperClient {
+
+    private static final Map<String, String[]> SITE_SELECTORS = new HashMap<>();
+    
+    static {
+        // Kariyer.net için selector'lar güncellendi ve genişletildi
+    	// JobScraperClient.java içinde Kariyer.net selector listesini güncelleyin
+    	SITE_SELECTORS.put("kariyer.net", new String[]{
+    	    ".job-detail-content", 
+    	    ".description", 
+    	    ".job-description",
+    	    "div[class*='job-detail']",
+    	    "main" // En kötü ihtimalle ana gövdeyi al
+    	});
+        
+        SITE_SELECTORS.put("linkedin.com", new String[]{
+            ".description__text", 
+            ".show-more-less-html__markup",
+            ".jobs-description__content"
+        });
+    }
+
+    public Map<String, String> fetchJobData(String url) {
+        Map<String, String> result = new HashMap<>();
+        log.info("🌐 İlan çekiliyor: {}", url);
+        
+        try {
+            Connection.Response response = Jsoup.connect(url)
+                    .userAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
+                    .header("Accept-Language", "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7")
+                    .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
+                    .referrer("https://www.google.com/")
+                    .ignoreHttpErrors(true)
+                    .followRedirects(true)
+                    .timeout(30000)
+                    .execute();
+
+            Document doc = response.parse();
+            result.put("pageTitle", doc.title());
+            
+            // 1. Siteye özel selector ile içerik çekme
+            String jobContent = extractJobSpecificContent(doc, url);
+            
+            // 2. Eğer özel içerik boşsa veya çok kısaysa yedek mekanizma (Fallback)
+            if (jobContent == null || jobContent.trim().length() < 100) {
+                log.warn("⚠️ Özel selector sonuç vermedi, sayfa metni temizleniyor...");
+                jobContent = cleanBodyText(doc.body());
+            }
+
+            result.put("jobContent", jobContent);
+            result.put("location", extractFromMeta(doc, "location", "place", "og:description"));
+            result.put("company", extractFromMeta(doc, "company", "organization", "og:title"));
+            
+            log.info("✅ İlan içeriği başarıyla çekildi (Karakter sayısı: {})", jobContent.length());
+            return result;
+
+        } catch (IOException e) {
+            log.error("❌ İlan çekme hatası: {}", e.getMessage());
+            throw new RuntimeException("İlan verisi çekilemedi: " + e.getMessage());
+        }
+    }
+    
+ // JobScraperClient.java içindeki metotları bu şekilde güncelleyin
+
+    private String extractJobSpecificContent(Document doc, String url) {
+        // Kariyer.net için eklenen özel önlem: JSON-LD verisini ayıklamaya çalış
+        // Birçok site ilan detaylarını script etiketleri içinde JSON olarak tutar
+        Elements scripts = doc.select("script[type='application/ld+json']");
+        for (Element script : scripts) {
+            String html = script.html();
+            if (html.contains("JobPosting")) {
+                // Buradaki metni basitçe temizleyip döndürebiliriz
+                return html.replaceAll("\\{.*?\\}", "").replaceAll("[\"}{]", "").trim();
+            }
+        }
+
+        // Normal selector mantığı devam etsin
+        for (Map.Entry<String, String[]> entry : SITE_SELECTORS.entrySet()) {
+            if (url.contains(entry.getKey())) {
+                for (String selector : entry.getValue()) {
+                    Elements elements = doc.select(selector);
+                    String text = elements.text().trim();
+                    if (text.length() > 100) return text;
+                }
+            }
+        }
+        return "";
+    }
+
+    private String cleanBodyText(Element body) {
+        if (body == null) return "";
+        Element content = body.clone();
+        
+        // Sadece ilanla ilgili olabilecek yerleri bırak, geri kalan her şeyi (header, footer, nav) sil
+        content.select("script, style, link, nav, header, footer, aside, .sidebar, .menu, .ads").remove();
+        
+        String text = content.text().trim();
+        
+        // Eğer hala boşsa, bot korumasına takılmışız demektir.
+        if (text.length() < 50) {
+            log.error("❌ Bot koruması veya Boş Sayfa: İçerik çekilemedi.");
+            return ""; 
+        }
+        return text;
+    }
+    
+    private String extractFromMeta(Document doc, String... keys) {
+        for (String key : keys) {
+            Element meta = doc.select("meta[name=" + key + "], meta[property=" + key + "]").first();
+            if (meta != null) {
+                return meta.attr("content");
+            }
+        }
+        return "";
+    }
+}

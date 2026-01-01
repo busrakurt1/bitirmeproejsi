@@ -1,0 +1,22 @@
+package com.cvbuilder.config;
+
+import java.util.Map;
+
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.stereotype.Component;
+
+import lombok.Data;
+
+//GeminiProperties.java (Zaten sende olabilir, kontrol et)
+@Data
+@Component
+@ConfigurationProperties(prefix = "gemini")
+public class GeminiProperties {
+ private Api api = new Api();
+ private String model;
+ @Data public static class Api { private String keys; }
+ public Map<String, Object> keyList() {
+	// TODO Auto-generated method stub
+	return null;
+ }
+}

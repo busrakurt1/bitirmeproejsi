@@ -1,0 +1,103 @@
+package com.cvbuilder.controller;
+
+import com.cvbuilder.dto.JobAnalysisRequest;
+import com.cvbuilder.dto.JobAnalysisResponse;
+import com.cvbuilder.dto.MarketAnalysisResponse;
+import com.cvbuilder.entity.JobPosting;
+import com.cvbuilder.service.JobAnalysisService;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+import java.util.Map;
+
+@Slf4j
+@RestController
+@RequestMapping("/api/job")
+@RequiredArgsConstructor
+@CrossOrigin(origins = "http://localhost:5173")
+public class JobController {
+
+    private final JobAnalysisService jobAnalysisService;
+
+    // ✅ TEKİL İLAN ANALİZİ - Body'den userId + url al
+    @PostMapping("/analyze")
+    public ResponseEntity<?> analyzeJob(@RequestBody JobAnalysisRequest request) {
+        Long userId = request.getUserId();
+        String url = request.getUrl();
+
+        log.info("Job analysis request - URL: {}, UserID: {}", url, userId);
+
+        // URL zorunlu
+        if (url == null || url.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "message", "url boş olamaz"
+            ));
+        }
+
+        // userId null gelirse fallback (istersen kaldır)
+        if (userId == null) {
+            userId = 1L;
+            log.warn("UserID null geldi. Fallback olarak {} kullanılıyor.", userId);
+        }
+
+        try {
+            JobAnalysisResponse response = jobAnalysisService.analyzeJobPosting(userId, url);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("Job analysis error: ", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of(
+                    "message", "İlan analizi sırasında hata oluştu",
+                    "detail", e.getMessage()
+            ));
+        }
+    }
+
+    // ✅ PAZAR ANALİZİ - Query parametrelerinden al
+    @GetMapping("/market-analysis")
+    public ResponseEntity<?> performMarketAnalysis(
+            @RequestParam(required = false) String area,
+            @RequestParam(required = false) Long userId) {
+
+        log.info("Market analysis request - Area: {}, UserID: {}", area, userId);
+
+        try {
+            Long targetUserId = (userId != null) ? userId : 1L;
+            if (userId == null) {
+                log.warn("Market analysis userId null geldi. Fallback olarak {} kullanılıyor.", targetUserId);
+            }
+
+            MarketAnalysisResponse response = jobAnalysisService.performMarketAnalysis(area, targetUserId);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("Market analysis error: ", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of(
+                    "message", "Pazar analizi sırasında hata oluştu",
+                    "detail", e.getMessage()
+            ));
+        }
+    }
+
+    // ✅ KULLANICI İLANLARINI GETİR
+    @GetMapping("/user/{userId}")
+    public ResponseEntity<?> getUserJobs(@PathVariable Long userId) {
+        log.info("Get user jobs request - UserID: {}", userId);
+
+        try {
+            List<JobPosting> userJobs = jobAnalysisService.getJobsByUserId(userId);
+            if (userJobs == null || userJobs.isEmpty()) {
+                return ResponseEntity.noContent().build();
+            }
+            return ResponseEntity.ok(userJobs);
+        } catch (Exception e) {
+            log.error("Get user jobs error: ", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of(
+                    "message", "Kullanıcı ilanları alınırken hata oluştu",
+                    "detail", e.getMessage()
+            ));
+        }
+    }
+}

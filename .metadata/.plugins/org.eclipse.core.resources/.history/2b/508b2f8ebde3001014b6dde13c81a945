@@ -1,0 +1,42 @@
+package com.cvbuilder.service;
+
+import com.cvbuilder.config.GroqProperties;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.*;
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
+import java.util.*;
+
+@Service
+@RequiredArgsConstructor
+public class GroqService {
+    private final RestTemplate restTemplate;
+    private final GroqProperties props;
+
+    public String generateOptimizedCv(String userProfile, String jobAnalysis) {
+        String prompt = String.format("Kullanıcı Profili: %s \nİş Analizi: %s \nBu bilgilere göre profesyonel bir CV taslağı oluştur.", userProfile, jobAnalysis);
+        return callGroq(prompt);
+    }
+
+    public String performMarketAnalysis(String area) {
+        String prompt = area + " alanı için güncel pazar analizi ve maaş beklentileri raporu oluştur.";
+        return callGroq(prompt);
+    }
+
+    private String callGroq(String prompt) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(props.getApi().getKeys().split(",")[0]); // İlk key
+        headers.setContentType(MediaType.APPLICATION_JSON);
+
+        Map<String, Object> body = Map.of(
+            "model", props.getModel(),
+            "messages", List.of(Map.of("role", "user", "content", prompt))
+        );
+
+        HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
+        ResponseEntity<Map> response = restTemplate.postForEntity(props.getApi().getUrl(), entity, Map.class);
+        
+        // Groq API cevabını extract etme mantığı...
+        return response.getBody().toString();
+    }
+}

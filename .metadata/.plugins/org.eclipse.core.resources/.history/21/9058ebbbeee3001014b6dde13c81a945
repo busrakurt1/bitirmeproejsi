@@ -1,0 +1,37 @@
+package com.cvbuilder.repository;
+
+import com.cvbuilder.entity.JobPosting;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+
+import java.awt.print.Pageable;
+import java.util.List;
+import java.util.Optional;
+
+public interface JobPostingRepository extends JpaRepository<JobPosting, Long> {
+
+    // Bir kullanıcıya ait tüm iş ilanları
+    List<JobPosting> findByUserId(Long userId);
+
+    // --- YENİ EKLENEN: Kullanıcının ilanlarını tarihe göre (yeniden eskiye) sıralı getir ---
+    List<JobPosting> findByUserIdOrderByCreatedAtDesc(Long userId);
+
+    // Aynı URL daha önce eklenmiş mi kontrol etmek için
+    List<JobPosting> findByUserIdAndUrl(Long userId, String url);
+
+    // Kullanıcının en son eklediği ilanı (optional)
+    Optional<JobPosting> findFirstByUserIdOrderByCreatedAtDesc(Long userId);
+
+    // Sistemdeki EN SON eklenen ilan (user'a bağlı olmadan)
+    Optional<JobPosting> findTopByOrderByCreatedAtDesc();
+
+	List<JobPosting> findTop100ByPositionContainingIgnoreCaseOrderByCreatedAtDesc(String area);
+	
+	@Query("SELECT j FROM JobPosting j WHERE " +
+	           "LOWER(j.position) LIKE LOWER(CONCAT('%', :keyword, '%')) OR " +
+	           "LOWER(j.requiredSkills) LIKE LOWER(CONCAT('%', :keyword, '%')) OR " +
+	           "LOWER(j.cleanedText) LIKE LOWER(CONCAT('%', :keyword, '%')) " +
+	           "ORDER BY j.createdAt DESC")
+	    List<JobPosting> searchMarketData(@Param("keyword") String keyword, Pageable pageable);
+	}

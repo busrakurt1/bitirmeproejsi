@@ -1,0 +1,95 @@
+package com.cvbuilder.external;
+
+import com.cvbuilder.dto.OptimizedCvItem;
+import com.cvbuilder.dto.UserCertificateDTO;
+import com.cvbuilder.dto.UserEducationDTO;
+import com.cvbuilder.dto.UserLanguageDTO;
+import com.cvbuilder.entity.JobPosting;
+import com.cvbuilder.entity.UserProfile;
+import com.cvbuilder.service.TranslationService;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+import java.util.*;
+import java.util.stream.Collectors;
+
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class AiClient {
+
+    private final TranslationService translationService;
+    private final ObjectMapper objectMapper; // Spring tarafından otomatik inject edilir
+
+    public Map<String, Object> analyzeJobPostingDetailed(String rawJobText) {
+        if (rawJobText == null || rawJobText.isBlank()) return createEmptyResponse();
+
+        String prompt = String.format("""
+                SEN BİR İŞ İLANI ANALİZ MAKİNESİSİN. Aşağıdaki metinden SADECE belirtilen alanları ayıkla ve SAF JSON döndür.
+                Asla açıklama yapma. Yanıtın doğrudan '{' ile başlamalı.
+                
+                ANALİZ EDİLECEK METİN:
+                %s
+                
+                DOLDURULACAK JSON ŞEMASI:
+                {
+                  "position": "İşin başlığı",
+                  "company": "Şirket adı",
+                  "location": "Konum",
+                  "workType": "Çalışma tipi",
+                  "experienceLevel": "Deneyim seviyesi",
+                  "educationLevel": "Eğitim kriteri",
+                  "technicalSkills": ["skill1", "skill2"],
+                  "responsibilities": ["görev1", "görev2"],
+                  "summary": "İşin kısa özeti"
+                }
+                """, rawJobText);
+
+        try {
+            String response = translationService.generateContent(prompt);
+            String cleanJson = extractJsonFromResponse(response);
+            // Manuel split yerine ObjectMapper kullanarak ClassCastException riskini azaltıyoruz
+            return objectMapper.readValue(cleanJson, new TypeReference<Map<String, Object>>() {});
+        } catch (Exception e) {
+            log.error("AI JSON Ayrıştırma Hatası: ", e);
+            return createEmptyResponse();
+        }
+    }
+
+    private String extractJsonFromResponse(String response) {
+        if (response == null) return "{}";
+        String clean = response.replaceAll("(?s)^.*?(\\{.*\\}).*$", "$1").trim();
+        return clean.isEmpty() ? "{}" : clean;
+    }
+
+    private Map<String, Object> createEmptyResponse() {
+        Map<String, Object> map = new HashMap<>();
+        String def = "Belirtilmemiş";
+        map.put("position", def); map.put("company", "Bilinmiyor");
+        map.put("location", def); map.put("workType", def);
+        map.put("experienceLevel", def); map.put("educationLevel", def);
+        map.put("technicalSkills", new ArrayList<String>());
+        map.put("responsibilities", new ArrayList<String>());
+        return map;
+    }
+
+    public String analyzeJobSubmission(UserProfile user, String rawJobText) {
+        return translationService.generateContent("Analiz et: " + rawJobText);
+    }
+
+    private String formatUserProfile(UserProfile user) {
+        return user != null ? user.getTitle() : "Profil Yok";
+    }
+
+    // Gerekli diğer optimize metotları (Sertifika, Dil vb.)
+    public List<OptimizedCvItem> optimizeExperiences(UserProfile p, JobPosting j) { return Collections.emptyList(); }
+    public List<UserEducationDTO> optimizeEducation(UserProfile p, JobPosting j) { return Collections.emptyList(); }
+    public List<UserLanguageDTO> optimizeLanguages(UserProfile p, JobPosting j) { return Collections.emptyList(); }
+    public List<UserCertificateDTO> optimizeCertificates(UserProfile p, JobPosting j) { return Collections.emptyList(); }
+    public List<OptimizedCvItem> optimizeProjects(UserProfile p, JobPosting j) { return Collections.emptyList(); }
+    public List<String> generateTailoredSummaries(UserProfile p, String c) { return Collections.emptyList(); }
+    public String getCareerAdvice(String t) { return "Hazır değil."; }
+    public String analyzeMarketWithAI(String a, List<JobPosting> j, UserProfile p) { return "Analiz yapıldı."; }
+}

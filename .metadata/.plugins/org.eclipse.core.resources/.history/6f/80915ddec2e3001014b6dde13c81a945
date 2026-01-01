@@ -1,0 +1,15 @@
+package com.cvbuilder.config;
+
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.stereotype.Component;
+
+import lombok.Data;
+
+@Data
+@Component
+@ConfigurationProperties(prefix = "groq")
+public class GroqProperties {
+    private Api api = new Api();
+    private String model;
+    @Data public static class Api { private String keys; private String url; }
+}

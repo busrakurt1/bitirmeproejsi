@@ -1,0 +1,60 @@
+package com.cvbuilder.external;
+
+import org.jsoup.Connection;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.springframework.stereotype.Component;
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
+
+@Component
+public class JobScraperClient {
+
+    public Map<String, String> fetchJobData(String url) {
+        Map<String, String> result = new HashMap<>();
+        
+        try {
+            // Kariyer.net bot korumasını aşmak için tarayıcı taklidi yapıyoruz
+            Connection.Response response = Jsoup.connect(url)
+                    .userAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
+                    .header("Accept-Language", "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7")
+                    .header("Cache-Control", "no-cache")
+                    .header("Pragma", "no-cache")
+                    .referrer("https://www.google.com/") // Google'dan geliyormuş gibi gösteriyoruz
+                    .ignoreHttpErrors(true)
+                    .followRedirects(true)
+                    .timeout(30000)
+                    .execute();
+
+            if (response.statusCode() != 200) {
+                throw new RuntimeException("Siteye erişilemedi. HTTP Kodu: " + response.statusCode());
+            }
+
+            Document doc = response.parse();
+            
+            // 1. Kariyer.net için özel selector
+            // Kariyer.net ilan metni genellikle şu div içinde olur:
+            Element contentElement = doc.selectFirst(".job-detail-content, #job-detail, .description__text, .jobs-description__content");
+            
+            String jobContent = "";
+            if (contentElement != null) {
+                jobContent = contentElement.text();
+            } else {
+                // Selector bulamazsa body içindeki tüm text'i al ama navigasyonları temizle
+                doc.select("nav, header, footer, script, style").remove();
+                jobContent = doc.body().text();
+            }
+
+            result.put("jobContent", jobContent);
+            result.put("pageTitle", doc.title());
+            
+            return result;
+
+        } catch (IOException e) {
+            throw new RuntimeException("Bağlantı hatası: " + e.getMessage());
+        }
+    }
+}

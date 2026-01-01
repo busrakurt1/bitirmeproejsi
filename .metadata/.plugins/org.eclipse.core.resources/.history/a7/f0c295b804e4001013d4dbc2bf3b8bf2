@@ -1,0 +1,184 @@
+package com.cvbuilder.service;
+
+import com.cvbuilder.dto.JobAnalysisResponse;
+import com.cvbuilder.dto.MarketAnalysisResponse;
+import com.cvbuilder.entity.JobPosting;
+import com.cvbuilder.entity.User;
+import com.cvbuilder.external.AiClient;
+import com.cvbuilder.external.JobScraperClient;
+import com.cvbuilder.repository.JobPostingRepository;
+import com.cvbuilder.repository.UserRepository;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.*;
+import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class JobAnalysisServiceImpl implements JobAnalysisService {
+
+    private final UserRepository userRepository;
+    private final JobPostingRepository jobPostingRepository;
+    private final JobScraperClient scraper;
+    private final AiClient aiClient;
+    private final ObjectMapper objectMapper;
+
+    @Override
+    @Transactional
+    public JobAnalysisResponse analyzeJobPosting(Long userId, String url) {
+        log.info("Link üzerinden iş analizi başlatıldı: User ID: {}, URL: {}", userId, url);
+
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("Kullanıcı bulunamadı"));
+
+        // 1. Linkten veriyi kazı
+        Map<String, String> scrapedData = scraper.fetchJobData(url);
+        String jobContent = scrapedData.getOrDefault("jobContent", scrapedData.getOrDefault("fullText", ""));
+
+        // 2. Analiz metotlarını çalıştır
+        return processAnalysis(user, jobContent, url);
+    }
+
+    @Override
+    @Transactional
+    public JobAnalysisResponse analyzeJobByRawText(Long userId, String jobContent) {
+        log.info("Metin üzerinden iş analizi başlatıldı: User ID: {}", userId);
+        
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("Kullanıcı bulunamadı"));
+
+        return processAnalysis(user, jobContent, "Manual Input");
+    }
+
+    private JobAnalysisResponse processAnalysis(User user, String jobContent, String url) {
+        // AI ile profil-iş eşleşme raporu oluştur (analyzeJobSubmission kullanılır)
+        String detailedReport = aiClient.analyzeJobSubmission(user.getProfile(), jobContent);
+        
+        // Teknik verileri JSON olarak çıkar (Skorlama ve beceri listesi için)
+        String jsonResult = aiClient.analyzeJobPostingUniversal(jobContent);
+        JobAiResult aiData = parseAiResult(jsonResult);
+
+        // Beceri karşılaştırması
+        List<String> userSkills = getUserSkillsNormalized(user);
+        List<String> matchedSkills = new ArrayList<>();
+        List<String> missingSkills = new ArrayList<>();
+
+        for (String reqSkill : aiData.technicalSkills) {
+            if (isUserHasSkill(userSkills, reqSkill)) matchedSkills.add(reqSkill);
+            else missingSkills.add(reqSkill);
+        }
+
+        // İlanı kaydet
+        JobPosting jp = saveJobPosting(user, url, aiData, jobContent, detailedReport);
+
+        // Skor hesaplama (Basit mantık: Eşleşen/Toplam)
+        int totalReq = aiData.technicalSkills.size();
+        int score = totalReq == 0 ? 0 : (int) Math.round((matchedSkills.size() * 100.0) / totalReq);
+
+        return JobAnalysisResponse.builder()
+                .jobId(jp.getId())
+                .matchedSkills(matchedSkills)
+                .missingSkills(missingSkills)
+                .position(emptyToUnspecified(aiData.position))
+                .company(emptyToUnspecified(aiData.company))
+                .matchScore(score)
+                .formattedAnalysis(detailedReport)
+                .build();
+    }
+
+    @Override
+    public MarketAnalysisResponse performMarketAnalysis(String area, Long userId) {
+        log.info("📊 Pazar Analizi başlatılıyor. Alan: {}, User: {}", area, userId);
+
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("Kullanıcı bulunamadı"));
+
+        // Veritabanındaki son 50 ilanı topla (Trend analizi için)
+        List<JobPosting> allJobs = jobPostingRepository.findAll().stream()
+                .sorted(Comparator.comparing(JobPosting::getCreatedAt).reversed())
+                .limit(50)
+                .collect(Collectors.toList());
+
+        // AI'ya tüm ilan verilerini ve kullanıcı profilini gönder
+        String aiMarketReport = aiClient.analyzeMarketWithAI(area, allJobs, user.getProfile());
+
+        return MarketAnalysisResponse.builder()
+                .area(area != null ? area : "Genel Teknoloji")
+                .userTitle(user.getProfile() != null ? user.getProfile().getTitle() : "Belirtilmemiş")
+                .aiRecommendation(aiMarketReport)
+                .isAutoAnalyzed(area == null)
+                .build();
+    }
+
+    // YARDIMCI METOTLAR (Mevcut yapı korundu)
+    private JobAiResult parseAiResult(String json) {
+        JobAiResult result = new JobAiResult();
+        try {
+            JsonNode root = objectMapper.readTree(json == null || json.isEmpty() ? "{}" : json);
+            result.position = getText(root, "position");
+            result.company = getText(root, "company");
+            if (root.has("technicalSkills") && root.get("technicalSkills").isArray()) {
+                result.technicalSkills = StreamSupport.stream(root.get("technicalSkills").spliterator(), false)
+                        .map(JsonNode::asText).filter(s -> s != null && !s.isBlank()).collect(Collectors.toList());
+            }
+        } catch (Exception e) { log.error("JSON Parse Hatası: ", e); }
+        return result;
+    }
+
+    private String getText(JsonNode node, String field) {
+        return (node != null && node.has(field) && !node.get(field).isNull()) ? node.get(field).asText("") : "";
+    }
+
+    private JobPosting saveJobPosting(User user, String url, JobAiResult aiData, String rawText, String report) {
+        JobPosting jp = JobPosting.builder()
+                .user(user).url(url).position(safeTruncate(aiData.position, 255))
+                .cleanedText(safeTruncate(rawText, 4000))
+                .analysisReport(safeTruncate(report, 4000))
+                .createdAt(new Date()).build();
+        return jobPostingRepository.save(jp);
+    }
+
+    private List<String> getUserSkillsNormalized(User user) {
+        if (user == null || user.getProfile() == null || user.getProfile().getSkills() == null) return new ArrayList<>();
+        return user.getProfile().getSkills().stream()
+                .map(s -> s.getSkillName() == null ? "" : s.getSkillName().toLowerCase(Locale.forLanguageTag("tr")).trim())
+                .filter(s -> !s.isBlank()).distinct().collect(Collectors.toList());
+    }
+
+    private boolean isUserHasSkill(List<String> userSkills, String reqSkill) {
+        if (reqSkill == null || reqSkill.isBlank()) return false;
+        String reqLower = reqSkill.toLowerCase(Locale.forLanguageTag("tr")).trim();
+        return userSkills.stream().anyMatch(uSkill -> reqLower.contains(uSkill) || uSkill.contains(reqLower));
+    }
+
+    private String safeTruncate(String v, int l) {
+        if (v == null) return "";
+        return v.length() > l ? v.substring(0, l - 3) + "..." : v;
+    }
+
+    private String emptyToUnspecified(String s) {
+        return (s == null || s.trim().isEmpty() || s.equalsIgnoreCase("null")) ? "Belirtilmemiş" : s.trim();
+    }
+
+    private static class JobAiResult {
+        String position = "";
+        String company = "";
+        List<String> technicalSkills = new ArrayList<>();
+    }
+
+    @Override
+    public List<JobPosting> getJobsByUserId(Long userId) { return jobPostingRepository.findByUserIdOrderByCreatedAtDesc(userId); }
+
+    @Override
+    public JobPosting getJobById(Long jobId) { return jobPostingRepository.findById(jobId).orElseThrow(); }
+
+    @Override
+    public JobAnalysisResponse analyzeJobPosting(Object object, String url) { return null; }
+}

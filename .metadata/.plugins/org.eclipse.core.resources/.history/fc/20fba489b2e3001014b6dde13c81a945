@@ -1,0 +1,23 @@
+package com.cvbuilder.external;
+
+import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.stereotype.Service;
+
+@Service
+@RequiredArgsConstructor
+public class AiRouter {
+
+    @Qualifier("groqClient")
+    private final LlmClient groqClient;
+
+    @Qualifier("geminiClient")
+    private final LlmClient geminiClient;
+
+    public LlmClient pick(AiTask task) {
+        return switch (task) {
+            case CV_GENERATION -> groqClient;   // CV işleri -> Llama (Groq)
+            case JOB_ANALYSIS  -> geminiClient; // İş analizi -> Gemini
+        };
+    }
+}

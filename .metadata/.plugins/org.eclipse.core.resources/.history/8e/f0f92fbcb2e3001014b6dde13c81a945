@@ -1,0 +1,73 @@
+package com.cvbuilder.client;
+
+import com.cvbuilder.external.LlmClient;
+import com.cvbuilder.config.GeminiProperties;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.http.*;
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
+
+import java.util.*;
+import java.util.concurrent.ThreadLocalRandom;
+
+@Slf4j
+@Service
+@Qualifier("geminiClient")
+@RequiredArgsConstructor
+public class GeminiClient implements LlmClient {
+
+    private final GeminiProperties geminiProperties;
+    private final RestTemplate restTemplate = new RestTemplate();
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public String generateContent(String prompt) {
+        String model = geminiProperties.getModel();
+
+        List<String> keys = geminiProperties.keyList();
+        if (keys.isEmpty()) {
+            throw new IllegalStateException("GEMINI api keys boş. 'gemini.api.keys' ayarla (ENV önerilir).");
+        }
+        String key = keys.get(ThreadLocalRandom.current().nextInt(keys.size()));
+
+        String url = "https://generativelanguage.googleapis.com/v1beta/models/"
+                + model + ":generateContent?key=" + key;
+
+        // Gemini: contents -> parts -> text
+        Map<String, Object> body = new HashMap<>();
+        Map<String, Object> part = Map.of("text", prompt);
+        Map<String, Object> content = Map.of("parts", List.of(part));
+        body.put("contents", List.of(content));
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+
+        HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
+
+        try {
+            ResponseEntity<Map> resp = restTemplate.exchange(url, HttpMethod.POST, entity, Map.class);
+            Map<String, Object> map = resp.getBody();
+            if (map == null) return "";
+
+            // candidates[0].content.parts[0].text
+            List<Map<String, Object>> candidates = (List<Map<String, Object>>) map.get("candidates");
+            if (candidates == null || candidates.isEmpty()) return "";
+
+            Map<String, Object> firstCand = candidates.get(0);
+            Map<String, Object> candContent = (Map<String, Object>) firstCand.get("content");
+            if (candContent == null) return "";
+
+            List<Map<String, Object>> parts = (List<Map<String, Object>>) candContent.get("parts");
+            if (parts == null || parts.isEmpty()) return "";
+
+            Object text = parts.get(0).get("text");
+            return text == null ? "" : text.toString();
+
+        } catch (Exception e) {
+            log.error("GeminiClient error: {}", e.getMessage());
+            throw e;
+        }
+    }
+}

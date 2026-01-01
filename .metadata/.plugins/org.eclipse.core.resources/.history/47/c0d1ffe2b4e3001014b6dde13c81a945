@@ -1,0 +1,310 @@
+package com.cvbuilder.external;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.jsoup.Connection;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.select.Elements;
+import org.springframework.stereotype.Component;
+
+import java.io.IOException;
+import java.util.*;
+
+@Component
+public class JobScraperClient {
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    private static final Map<String, String[]> SITE_SELECTORS = new HashMap<>();
+
+    static {
+        // NOTE: Kariyer.net DOM selector’ları sık değişiyor / JS render olabiliyor.
+        // O yüzden JSON-LD (JobPosting) ÖNCELİKLİ olacak.
+        SITE_SELECTORS.put("kariyer.net", new String[]{
+                "main",                           // çoğu sitede ana içerik
+                "article",                        // job detail bazen article içinde
+                "section",                        // geniş fallback
+                "div[class*='job']",              // genel job alanları
+                "div[class*='detail']",
+                "div[class*='description']",
+                "div[class*='ilan']"
+        });
+
+        SITE_SELECTORS.put("linkedin.com", new String[]{
+                ".description__text",
+                ".show-more-less-html__markup",
+                ".jobs-description__content",
+                "main"
+        });
+
+        SITE_SELECTORS.put("yenibiris.com", new String[]{
+                ".job-detail-content",
+                ".detail-text",
+                "main"
+        });
+
+        SITE_SELECTORS.put("eleman.net", new String[]{
+                ".ilanDetay",
+                "#jobDetail",
+                "main"
+        });
+    }
+
+    public Map<String, String> fetchJobData(String url) {
+        Map<String, String> result = new HashMap<>();
+        result.put("url", url);
+
+        try {
+            Connection.Response response = Jsoup.connect(url)
+                    .userAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+                    .header("Accept-Language", "tr-TR,tr;q=0.9,en;q=0.8")
+                    .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                    .referrer("https://www.google.com/")
+                    .timeout(20000)
+                    .followRedirects(true)
+                    .ignoreHttpErrors(true)
+                    .maxBodySize(2_000_000)
+                    .execute();
+
+            Document doc = response.parse();
+
+            // 1) Başlık
+            String pageTitle = safe(doc.title());
+            result.put("pageTitle", pageTitle);
+
+            // 2) JSON-LD (JobPosting) varsa önce buradan topla (en sağlam)
+            JobPostingLd ld = extractJobPostingFromJsonLd(doc);
+            if (ld != null) {
+                if (!ld.position.isBlank()) result.put("position", ld.position);
+                if (!ld.company.isBlank()) result.put("company", ld.company);
+                if (!ld.location.isBlank()) result.put("location", ld.location);
+                if (!ld.description.isBlank()) {
+                    result.put("jobContent", ld.description);
+                }
+                result.put("structuredData", ld.rawJson);
+            }
+
+            // 3) Selector ile ilan içeriği (JSON-LD boşsa / kısa ise)
+            String jobContent = safe(result.get("jobContent"));
+            if (jobContent.length() < 120) {
+                String extracted = extractJobSpecificContent(doc, url);
+                if (extracted.length() > jobContent.length()) {
+                    jobContent = extracted;
+                }
+                result.put("jobContent", jobContent);
+            }
+
+            // 4) Meta fallback (JSON-LD yoksa)
+            if (!result.containsKey("location") || result.get("location").isBlank()) {
+                result.put("location", extractFromMeta(doc, "location", "place", "og:locality", "og:region"));
+            }
+            if (!result.containsKey("company") || result.get("company").isBlank()) {
+                result.put("company", extractFromMeta(doc, "company", "organization", "og:site_name"));
+            }
+
+            // 5) Full text (son fallback)
+            String fullText = "";
+            if (doc.body() != null) {
+                fullText = cleanBodyText(doc.body().clone()); // clone: doc’u bozma
+            }
+            result.put("fullText", fullText);
+
+            // 6) jobContent hâlâ boşsa fullText’e düş
+            if (safe(result.get("jobContent")).isBlank()) {
+                result.put("jobContent", safe(fullText));
+            }
+
+            return result;
+
+        } catch (IOException e) {
+            throw new RuntimeException("İlan çekilemedi: " + e.getMessage(), e);
+        }
+    }
+
+    private String extractJobSpecificContent(Document doc, String url) {
+        // Site bazlı selector denenmesi
+        for (Map.Entry<String, String[]> entry : SITE_SELECTORS.entrySet()) {
+            if (url.contains(entry.getKey())) {
+                for (String selector : entry.getValue()) {
+                    Elements elements = doc.select(selector);
+                    String combined = combineText(elements);
+                    if (combined.length() >= 300) { // kısa parçaları ele
+                        return combined;
+                    }
+                }
+            }
+        }
+
+        // Fallback: İş ilanı olabilecek bölgeleri topla
+        Elements likelySections = doc.select(
+                "main, article, " +
+                "div[class*='job'], div[class*='detail'], div[class*='description'], " +
+                "section[class*='content'], div[class*='position'], div[class*='requirement'], " +
+                "div[class*='qualification'], div[class*='responsibil'], div[class*='nitelik'], div[class*='sorumluluk']"
+        );
+
+        String best = "";
+        for (Element el : likelySections) {
+            String text = safe(el.text());
+            String lower = text.toLowerCase(Locale.forLanguageTag("tr"));
+            // iş ilanı sinyali olan kelimeler
+            if (lower.contains("aranan") || lower.contains("sorumluluk") ||
+                lower.contains("nitelik") || lower.contains("beceri") ||
+                lower.contains("tecrübe") || lower.contains("yetenek") ||
+                lower.contains("iş tanımı") || lower.contains("genel nitelikler")) {
+
+                if (text.length() > best.length()) best = text;
+            }
+        }
+
+        if (best.length() >= 250) return normalize(best);
+
+        // Son çare: Body text’i temizle
+        return normalize(cleanBodyText(doc.body().clone()));
+    }
+
+    private String cleanBodyText(Element body) {
+        if (body == null) return "";
+        body.select("nav, header, footer, script, style, iframe, .nav, .menu, .sidebar, .breadcrumb, .cookie").remove();
+        return body.text();
+    }
+
+    private String extractFromMeta(Document doc, String... keys) {
+        for (String key : keys) {
+            Element meta = doc.select("meta[name=" + key + "], meta[property=" + key + "]").first();
+            if (meta != null) {
+                return safe(meta.attr("content"));
+            }
+        }
+        return "";
+    }
+
+    private String combineText(Elements elements) {
+        if (elements == null || elements.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        for (Element el : elements) {
+            String t = safe(el.text());
+            if (!t.isBlank()) sb.append(t).append("\n");
+        }
+        return normalize(sb.toString());
+    }
+
+    private String normalize(String s) {
+        if (s == null) return "";
+        return s.replaceAll("\\s+", " ").trim();
+    }
+
+    private String safe(String s) {
+        return s == null ? "" : s.trim();
+    }
+
+    // -------------------------
+    // JSON-LD (JobPosting) parse
+    // -------------------------
+    private JobPostingLd extractJobPostingFromJsonLd(Document doc) {
+        Elements scripts = doc.select("script[type='application/ld+json']");
+        for (Element script : scripts) {
+            String json = safe(script.html());
+            if (json.isBlank()) continue;
+
+            // bazen bir array, bazen tek object olur
+            try {
+                JsonNode root = objectMapper.readTree(json);
+
+                // 1) Array ise içinde JobPosting ara
+                if (root.isArray()) {
+                    for (JsonNode node : root) {
+                        JobPostingLd found = parseJobPostingNode(node, json);
+                        if (found != null) return found;
+                    }
+                }
+
+                // 2) Object ise direkt dene
+                JobPostingLd found = parseJobPostingNode(root, json);
+                if (found != null) return found;
+
+                // 3) @graph varsa içinde ara
+                JsonNode graph = root.get("@graph");
+                if (graph != null && graph.isArray()) {
+                    for (JsonNode node : graph) {
+                        JobPostingLd gFound = parseJobPostingNode(node, json);
+                        if (gFound != null) return gFound;
+                    }
+                }
+            } catch (Exception ignored) {
+                // JSON bozuk olabilir, devam et
+            }
+        }
+        return null;
+    }
+
+    private JobPostingLd parseJobPostingNode(JsonNode node, String rawJson) {
+        if (node == null || node.isNull()) return null;
+
+        // @type "JobPosting" kontrolü (format farklarına dayanıklı)
+        JsonNode type = node.get("@type");
+        boolean isJobPosting = false;
+
+        if (type != null) {
+            if (type.isTextual() && type.asText("").toLowerCase().contains("jobposting")) isJobPosting = true;
+            if (type.isArray()) {
+                for (JsonNode t : type) {
+                    if (t.asText("").toLowerCase().contains("jobposting")) {
+                        isJobPosting = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!isJobPosting) return null;
+
+        JobPostingLd out = new JobPostingLd();
+        out.rawJson = rawJson;
+
+        out.position = safe(node.path("title").asText(""));
+
+        // company: hiringOrganization.name
+        JsonNode org = node.path("hiringOrganization");
+        out.company = safe(org.path("name").asText(""));
+
+        // location: jobLocation.address.addressLocality / addressRegion / addressCountry
+        JsonNode jobLoc = node.path("jobLocation");
+        if (jobLoc.isArray() && jobLoc.size() > 0) jobLoc = jobLoc.get(0);
+
+        JsonNode addr = jobLoc.path("address");
+        String locality = safe(addr.path("addressLocality").asText(""));
+        String region = safe(addr.path("addressRegion").asText(""));
+        String country = safe(addr.path("addressCountry").asText(""));
+
+        String loc = String.join(", ", Arrays.asList(locality, region, country)
+                .stream().filter(s -> s != null && !s.isBlank()).toList());
+        out.location = loc;
+
+        // description: HTML gelebilir -> Jsoup ile temizle
+        String desc = node.path("description").asText("");
+        desc = safe(desc);
+        if (!desc.isBlank()) {
+            out.description = normalize(Jsoup.parse(desc).text());
+        }
+
+        // Eğer title boşsa, alternativeHeadline vb. deneyebilirsin
+        if (out.position.isBlank()) out.position = safe(node.path("alternativeHeadline").asText(""));
+
+        return out;
+    }
+
+    private static class JobPostingLd {
+        String position = "";
+        String company = "";
+        String location = "";
+        String description = "";
+        String rawJson = "";
+    }
+
+    // Şimdilik boş bırakmışsın; kullanmıyorsan kaldırabilirsin
+    public List<String> fetchLatestJobUrls(String normalizedTitle, int limit, boolean includeClosed, String sort) {
+        return null;
+    }
+}

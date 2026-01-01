@@ -1,0 +1,6 @@
+package com.cvbuilder.external;
+
+public enum AiTask {
+    CV_GENERATION,
+    JOB_ANALYSIS
+}

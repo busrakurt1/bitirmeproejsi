@@ -1,0 +1,153 @@
+package com.cvbuilder.external;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.jsoup.Connection;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.*;
+import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestTemplate;
+
+import java.io.IOException;
+import java.util.*;
+
+@Component
+public class JobScraperClient {
+
+    private static final Logger logger = LoggerFactory.getLogger(JobScraperClient.class);
+    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final RestTemplate restTemplate;
+
+    public JobScraperClient(RestTemplate restTemplate) {
+        this.restTemplate = restTemplate;
+    }
+
+    private static final List<String> USER_AGENTS = Arrays.asList(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    );
+
+    public Map<String, String> fetchJobData(String url) {
+        Map<String, String> result = new HashMap<>();
+        result.put("url", url);
+        result.put("scrapedAt", new Date().toString());
+
+        logger.info("Fetching job data from URL: {}", url);
+
+        try {
+            // 1. Scraping Dene (Kariyer.net API genellikle 404 döndüğü için önceliği buna veriyoruz)
+            Map<String, String> scrapedData = advancedScrapeWithRotatingHeaders(url);
+            
+            if (!isDataEmpty(scrapedData)) {
+                return scrapedData;
+            }
+
+            // 2. Scraping başarısızsa API'yi dene
+            if (url.contains("kariyer.net")) {
+                Map<String, String> apiData = fetchFromKariyerNetApi(url);
+                if (!isDataEmpty(apiData)) return apiData;
+            }
+            
+            logger.warn("All methods failed, returning mock data for: {}", url);
+            return createMockJobData(url);
+
+        } catch (Exception e) {
+            logger.error("Critical error fetching job data: {}", e.getMessage());
+            return createMockJobData(url);
+        }
+    }
+
+    private Map<String, String> advancedScrapeWithRotatingHeaders(String url) throws IOException {
+        String userAgent = getRandomUserAgent();
+        
+        Connection.Response response = Jsoup.connect(url)
+                .userAgent(userAgent)
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+                .header("Accept-Language", "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7")
+                .header("Cache-Control", "no-cache")
+                .header("Pragma", "no-cache")
+                .timeout(15000)
+                .execute();
+
+        if (response.statusCode() == 200) {
+            Document doc = response.parse();
+            return parseJobPage(doc, url);
+        }
+        return new HashMap<>();
+    }
+
+    private Map<String, String> parseJobPage(Document doc, String url) {
+        Map<String, String> data = new HashMap<>();
+        data.put("url", url);
+
+        // Kariyer.net için özel seçiciler
+        String title = doc.select(".job-detail-title, h1").text();
+        String company = doc.select(".company-name, .job-detail-company").text();
+        // İş tanımı genellikle 'job-description' veya 'description' class'ında olur
+        String description = doc.select(".job-description, .description, #job-description").text();
+
+        data.put("position", title);
+        data.put("company", company);
+        data.put("description", description);
+        data.put("dataSource", "Jsoup Scraping");
+
+        return data;
+    }
+
+    private Map<String, String> fetchFromKariyerNetApi(String url) {
+        Map<String, String> result = new HashMap<>();
+        try {
+            String jobId = extractJobIdFromUrl(url);
+            if (jobId == null) return result;
+
+            String apiUrl = "https://www.kariyer.net/api/v2/jobs/" + jobId;
+            
+            HttpHeaders headers = new HttpHeaders();
+            headers.set("User-Agent", getRandomUserAgent());
+            headers.setAccept(Collections.singletonList(MediaType.APPLICATION_JSON));
+            
+            HttpEntity<String> entity = new HttpEntity<>(headers);
+            ResponseEntity<String> response = restTemplate.exchange(apiUrl, HttpMethod.GET, entity, String.class);
+
+            if (response.getStatusCode() == HttpStatus.OK) {
+                JsonNode json = objectMapper.readTree(response.getBody());
+                result.put("position", json.path("title").asText());
+                result.put("company", json.path("company").path("name").asText());
+                result.put("description", json.path("description").asText());
+                result.put("dataSource", "Kariyer.net API");
+            }
+        } catch (Exception e) {
+            logger.error("API Error: {}", e.getMessage());
+        }
+        return result;
+    }
+
+    private String extractJobIdFromUrl(String url) {
+        try {
+            String[] parts = url.split("-");
+            return parts[parts.length - 1].replaceAll("[^0-9]", "");
+        } catch (Exception e) { return null; }
+    }
+
+    private String getRandomUserAgent() {
+        return USER_AGENTS.get(new Random().nextInt(USER_AGENTS.size()));
+    }
+
+    private boolean isDataEmpty(Map<String, String> data) {
+        return data == null || data.isEmpty() || data.getOrDefault("description", "").isBlank();
+    }
+
+    private Map<String, String> createMockJobData(String url) {
+        Map<String, String> mock = new HashMap<>();
+        mock.put("url", url);
+        mock.put("position", "Yazılım Geliştirme Uzmanı");
+        mock.put("company", "Örnek Teknoloji A.Ş.");
+        mock.put("description", "Java, Spring Boot ve SQL konularında deneyimli adaylar aranıyor.");
+        mock.put("dataSource", "Fallback Mock Data");
+        return mock;
+    }
+}

@@ -1,0 +1,6 @@
+name=DBeaver
+id=org.jkiss.dbeaver.product
+version=25.2.3
+snapshot=25.2.3-202510191611
+branch=release_25_2_3
+commit=1cdb42cb0a

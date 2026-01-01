@@ -1,0 +1,61 @@
+package com.cvbuilder.client;
+
+import com.cvbuilder.external.LlmClient;
+import com.cvbuilder.config.GroqProperties;
+import org.springframework.http.*;
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
+
+import java.util.*;
+import java.util.concurrent.ThreadLocalRandom;
+
+@Service("groqClient") // ✅ Bean adı bu!
+public class GroqLlamaClient implements LlmClient {
+
+    private final GroqProperties groqProperties;
+    private final RestTemplate restTemplate = new RestTemplate();
+
+    public GroqLlamaClient(GroqProperties groqProperties) {
+        this.groqProperties = groqProperties;
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public String generateContent(String prompt) {
+        String url = groqProperties.getApi().getUrl();
+        String model = groqProperties.getModel();
+
+        List<String> keys = groqProperties.keyList();
+        if (keys.isEmpty()) throw new IllegalStateException("GROQ_KEYS boş (ENV ile ayarla)");
+
+        String key = keys.get(ThreadLocalRandom.current().nextInt(keys.size()));
+
+        Map<String, Object> body = new HashMap<>();
+        body.put("model", model);
+        body.put("temperature", 0.4);
+        body.put("messages", List.of(
+                Map.of("role", "system", "content", "You are a helpful assistant."),
+                Map.of("role", "user", "content", prompt)
+        ));
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setBearerAuth(key);
+
+        ResponseEntity<Map> resp = restTemplate.exchange(
+                url, HttpMethod.POST, new HttpEntity<>(body, headers), Map.class
+        );
+
+        Map<String, Object> map = resp.getBody();
+        if (map == null) return "";
+
+        List<Map<String, Object>> choices = (List<Map<String, Object>>) map.get("choices");
+        if (choices == null || choices.isEmpty()) return "";
+
+        Map<String, Object> msg = (Map<String, Object>) choices.get(0).get("message");
+        if (msg == null) return "";
+
+        Object content = msg.get("content");
+        return content == null ? "" : content.toString();
+    }
+}

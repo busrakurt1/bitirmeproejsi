@@ -1,0 +1,77 @@
+package com.cvbuilder.controller;
+
+import com.cvbuilder.dto.JobAnalysisResponse;
+import com.cvbuilder.dto.JobUrlRequest;
+import com.cvbuilder.dto.MarketAnalysisResponse;
+import com.cvbuilder.entity.JobPosting;
+import com.cvbuilder.service.JobAnalysisService;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+
+@Slf4j
+@RestController
+@RequestMapping("/api/job")
+@RequiredArgsConstructor
+@CrossOrigin(origins = "http://localhost:5173")
+public class JobController {
+
+    private final JobAnalysisService jobAnalysisService;
+
+    // ✅ TEKİL İLAN ANALİZİ - Body'den userId al
+    @PostMapping("/analyze")
+    public ResponseEntity<JobAnalysisResponse> analyzeJob(@RequestBody JobUrlRequest request) {
+        log.info("Job analysis request - URL: {}, UserID: {}", request.getUrl(), request.getUserId());
+        
+        try {
+            JobAnalysisResponse response = jobAnalysisService.analyzeJobPosting(
+                request.getUserId(), 
+                request.getUrl()
+            );
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("Job analysis error: ", e);
+            throw new RuntimeException("İlan analizi sırasında hata: " + e.getMessage());
+        }
+    }
+
+    // ✅ PAZAR ANALİZİ - Query parametrelerinden al
+    @GetMapping("/market-analysis")
+    public ResponseEntity<MarketAnalysisResponse> performMarketAnalysis(
+            @RequestParam(required = false) String area,
+            @RequestParam(required = false) Long userId) {
+        
+        log.info("Market analysis request - Area: {}, UserID: {}", area, userId);
+        
+        try {
+            // Eğer userId null ise varsayılan değer kullan
+            Long targetUserId = (userId != null) ? userId : 1L;
+            
+            MarketAnalysisResponse response = jobAnalysisService.performMarketAnalysis(
+                area, 
+                targetUserId
+            );
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            log.error("Market analysis error: ", e);
+            throw new RuntimeException("Pazar analizi sırasında hata: " + e.getMessage());
+        }
+    }
+    
+    // ✅ KULLANICI İLANLARINI GETİR
+    @GetMapping("/user/{userId}")
+    public ResponseEntity<List<JobPosting>> getUserJobs(@PathVariable Long userId) {
+        log.info("Get user jobs request - UserID: {}", userId);
+        
+        List<JobPosting> userJobs = jobAnalysisService.getJobsByUserId(userId);
+        
+        if (userJobs.isEmpty()) {
+            return ResponseEntity.noContent().build();
+        }
+        
+        return ResponseEntity.ok(userJobs);
+    }
+}

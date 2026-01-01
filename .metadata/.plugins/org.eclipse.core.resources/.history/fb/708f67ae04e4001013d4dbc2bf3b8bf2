@@ -1,0 +1,137 @@
+package com.cvbuilder.external;
+
+import com.cvbuilder.entity.JobPosting;
+import com.cvbuilder.entity.UserProfile;
+import com.cvbuilder.service.TranslationService;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+import java.util.*;
+import java.util.stream.Collectors;
+
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class AiClient {
+
+    private final TranslationService translationService;
+
+    /**
+     * BİREYSEL EŞLEŞME ANALİZİ: Adayın profilini tek bir iş ilanıyla karşılaştırır.
+     */
+    public String analyzeJobSubmission(UserProfile user, String rawJobText) {
+        String userContext = formatUserProfile(user);
+        
+        String prompt = String.format("""
+            SEN KIDEMLİ BİR TEKNİK RECRUITER'SIN. 
+            Görevin, adayın profili ile iş ilanını karşılaştırıp profesyonel bir rapor sunmaktır.
+            
+            ADAY PROFİLİ:
+            %s
+            
+            İŞ İLANI:
+            %s
+            
+            Lütfen şu formatta cevap ver:
+            ### 📊 Uyumluluk Özeti
+            (Genel bir paragraf)
+            
+            ### ✅ Eşleşen Kritik Yetenekler
+            - (İlandaki ihtiyacı karşılayan yetenekleriniz)
+            
+            ### ⚠️ Gelişim Alanları ve Eksikler
+            - (Adayın bu iş için öğrenmesi gerekenler)
+            
+            ### 🎯 Mülakat Tavsiyesi
+            - (Bu aday mülakata girerse hangi konularda hazırlıklı olmalı?)
+            """, userContext, rawJobText);
+
+        try {
+            return translationService.generateContent(prompt);
+        } catch (Exception e) {
+            log.error("İş Analiz AI Hatası: ", e);
+            return "Analiz şu an yapılamıyor.";
+        }
+    }
+
+    /**
+     * PAZAR TREND ANALİZİ: Sistemdeki tüm ilanları tarayıp "En Çok İstenenleri" çıkarır.
+     */
+    public String analyzeMarketWithAI(String area, List<JobPosting> allJobs, UserProfile userProfile) {
+        String allJobsData = formatAllJobPostingsForAI(allJobs);
+        String userContext = formatUserProfile(userProfile);
+
+        String prompt = String.format("""
+            SEN BİR TEKNOLOJİ PAZAR ANALİSTİSİN.
+            Aşağıdaki veriler sistemdeki gerçek iş ilanlarından toplanmıştır.
+            
+            HEDEF ALAN: %s
+            
+            İŞ İLANLARI VERİSİ:
+            %s
+            
+            ADAY PROFİLİ:
+            %s
+            
+            GÖREVİN:
+            1. Hedef alandaki en popüler 10 teknolojiyi belirle.
+            2. Adayın bu pazar trendinin neresinde olduğunu analiz et.
+            3. Kişiselleştirilmiş bir öğrenme yol haritası sun.
+            
+            ÇIKTI FORMATI:
+            ### 🔥 Pazar Trendleri (En Çok İstenenler)
+            - [Teknoloji]: %%[Talep Oranı]
+            
+            ### 📉 Profiliniz ve Pazar Uyumu
+            (Analiz paragrafı)
+            
+            ### 🚀 6 Aylık Gelişim Planı
+            - [Ay 1-2]: ...
+            """, area != null ? area : "Genel", allJobsData, userContext);
+
+        try {
+            return translationService.generateContent(prompt);
+        } catch (Exception e) {
+            log.error("Pazar Analiz AI Hatası: ", e);
+            return "Pazar trendleri şu an analiz edilemiyor.";
+        }
+    }
+
+    public String analyzeJobPostingUniversal(String rawJobText) {
+        String prompt = String.format("""
+            Aşağıdaki iş ilanını analiz et ve SADECE JSON döndür.
+            {
+              "position": "...",
+              "company": "...",
+              "technicalSkills": ["skill1", "skill2"],
+              "summary": "..."
+            }
+            METİN: %s
+            """, rawJobText);
+
+        try {
+            String response = translationService.generateContent(prompt);
+            return response != null ? response.replaceAll("```json|```", "").trim() : "{}";
+        } catch (Exception e) { return "{}"; }
+    }
+
+    // YARDIMCI FORMATLAMA METOTLARI
+    private String formatUserProfile(UserProfile user) {
+        if (user == null) return "Profil bulunamadı.";
+        StringBuilder sb = new StringBuilder();
+        sb.append("Unvan: ").append(user.getTitle()).append("\n");
+        sb.append("Beceriler: ");
+        if (user.getSkills() != null) {
+            user.getSkills().forEach(s -> sb.append(s.getSkillName()).append(", "));
+        }
+        return sb.toString();
+    }
+
+    private String formatAllJobPostingsForAI(List<JobPosting> allJobs) {
+        StringBuilder sb = new StringBuilder();
+        for (JobPosting job : allJobs) {
+            sb.append("- ").append(job.getPosition()).append(": ").append(job.getRequiredSkills()).append("\n");
+        }
+        return sb.toString();
+    }
+}

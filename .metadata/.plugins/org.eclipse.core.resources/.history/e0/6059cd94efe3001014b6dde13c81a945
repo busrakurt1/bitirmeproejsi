@@ -1,0 +1,81 @@
+package com.cvbuilder.external;
+
+import lombok.extern.slf4j.Slf4j;
+import org.jsoup.Connection;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.select.Elements;
+import org.springframework.stereotype.Component;
+
+import java.io.IOException;
+import java.util.*;
+
+@Slf4j
+@Component
+public class JobScraperClient {
+
+    private static final String USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+    /**
+     * İnternet üzerinde anahtar kelime ile arama yapar ve ilk X ilanın içeriğini çeker.
+     */
+    public List<Map<String, String>> searchAndFetchJobsLive(String keyword, int limit) {
+        List<Map<String, String>> liveJobs = new ArrayList<>();
+        // Örnek: Kariyer.net arama URL'si (Sektöre göre linkler güncellenebilir)
+        String searchUrl = "https://www.kariyer.net/is-ilanlari?kw=" + keyword.replace(" ", "+");
+
+        try {
+            log.info("Canlı arama başlatılıyor: {}", searchUrl);
+            Document searchPage = Jsoup.connect(searchUrl).userAgent(USER_AGENT).timeout(10000).get();
+            
+            // Kariyer.net için ilan linklerini seçen selector (Örnektir, site değişimine göre güncellenir)
+            Elements jobLinks = searchPage.select("a.k-ad-card"); // İlan kartlarının linkleri
+
+            int count = 0;
+            for (Element link : jobLinks) {
+                if (count >= limit) break;
+                String jobUrl = "https://www.kariyer.net" + link.attr("href");
+                try {
+                    Map<String, String> data = fetchJobData(jobUrl);
+                    liveJobs.add(data);
+                    count++;
+                    log.info("Canlı veri çekildi: {}", jobUrl);
+                    Thread.sleep(500); // Bot engeline takılmamak için kısa bekleme
+                } catch (Exception e) {
+                    log.error("Link çekilemedi: {} - {}", jobUrl, e.getMessage());
+                }
+            }
+        } catch (IOException e) {
+            log.error("Arama sayfası okunamadı: {}", e.getMessage());
+        }
+        return liveJobs;
+    }
+
+    public Map<String, String> fetchJobData(String url) {
+        Map<String, String> result = new HashMap<>();
+        try {
+            Connection.Response response = Jsoup.connect(url)
+                    .userAgent(USER_AGENT)
+                    .header("Accept-Language", "tr-TR,tr;q=0.9")
+                    .ignoreHttpErrors(true)
+                    .timeout(15000)
+                    .execute();
+
+            Document doc = response.parse();
+            result.put("jobContent", extractContent(doc));
+            result.put("url", url);
+            return result;
+        } catch (IOException e) {
+            throw new RuntimeException("İlan çekilemedi: " + e.getMessage());
+        }
+    }
+
+    private String extractContent(Document doc) {
+        // Gereksiz alanları temizle
+        doc.select("nav, header, footer, script, style").remove();
+        // Ana içeriği olabilecek yerleri bul
+        Elements body = doc.select("div[class*='job-detail'], section, article, .description");
+        return body.isEmpty() ? doc.body().text() : body.text();
+    }
+}

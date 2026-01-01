@@ -1,0 +1,151 @@
+spring:
+  profiles:
+    active: dev
+  application:
+    name: cv-builder-backend
+  main:
+    allow-bean-definition-overriding: true
+
+  mvc:
+    pathmatch:
+      matching-strategy: ant_path_matcher
+
+  devtools:
+    restart:
+      enabled: true
+    livereload:
+      enabled: true
+
+# ==========================================
+# 1. GROQ CONFIGURATION (PRIMARY - ÖNCELİKLİ)
+# ==========================================
+# Llama 3 70B modeli CV analizinde çok başarılıdır ve genellikle daha hızlıdır.
+groq:
+  api:
+    keys: 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,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,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,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,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,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
+    url: https://api.groq.com/openai/v1/chat/completions
+  model: llama-3.1-8b-instant
+
+# ==========================================
+# 2. GEMINI CONFIGURATION (SECONDARY / FALLBACK 1)
+# ==========================================
+# Groq çalışmazsa veya kota dolarsa devreye girecek
+gemini:
+  api:
+    keys: AIzaSyAb0Bh1VDTOZu1ThpFCF-pk_O_PW9BEu3g
+  model: gemini-2.5-flash
+
+# ==========================================
+# 3. DEEPSEEK CONFIGURATION (TERTIARY / FALLBACK 2)
+# ==========================================
+
+
+# CV Storage
+cv:
+  storage:
+    path: ./generated-cvs/
+  max-file-size: 10MB
+
+# Server Configuration
+server:
+  port: 8080
+  servlet:
+    context-path: /
+    session:
+      timeout: 30m
+  compression:
+    enabled: true
+    mime-types: text/html,text/xml,text/plain,text/css,text/javascript,application/javascript,application/json
+
+# Logging
+logging:
+  level:
+    com.cvbuilder: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql.BasicBinder: TRACE
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+  file:
+    name: logs/cv-builder.log
+
+# Actuator
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+
+# ==========================================
+# DEV PROFILE (H2 IN-MEMORY)
+# ==========================================
+---
+spring:
+  config:
+    activate:
+      on-profile: dev
+
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+      settings:
+        web-allow-others: true
+
+  datasource:
+    url: jdbc:h2:file:./data/cvbuilderDB;DB_CLOSE_DELAY=-1;AUTO_SERVER=TRUE
+    username: sa
+    password: password
+    driver-class-name: org.h2.Driver
+
+  jpa:
+    database-platform: org.hibernate.dialect.H2Dialect
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+logging:
+  level:
+    com.cvbuilder: TRACE
+    org.hibernate: DEBUG
+
+# ==========================================
+# PROD PROFILE (POSTGRESQL)
+# ==========================================
+---
+spring:
+  config:
+    activate:
+      on-profile: prod
+
+  datasource:
+    url: jdbc:postgresql://production-server:5432/cvbuilder_prod
+    username: ${DB_USERNAME:prod_user}
+    password: ${DB_PASSWORD:strong_password}
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+
+server:
+  port: 8080
+
+logging:
+  level:
+    com.cvbuilder: INFO
+    org.hibernate: WARN
+  file:
+    name: /var/log/cv-builder/application.log

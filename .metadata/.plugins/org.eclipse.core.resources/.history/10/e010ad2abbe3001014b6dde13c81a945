@@ -1,0 +1,62 @@
+package com.cvbuilder.client;
+
+import com.cvbuilder.external.LlmClient;
+import com.cvbuilder.config.GeminiProperties;
+import org.springframework.http.*;
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
+
+import java.util.*;
+import java.util.concurrent.ThreadLocalRandom;
+
+@Service("geminiClient") // ✅ Bean adı bu!
+public class GeminiClient implements LlmClient {
+
+    private final GeminiProperties geminiProperties;
+    private final RestTemplate restTemplate = new RestTemplate();
+
+    public GeminiClient(GeminiProperties geminiProperties) {
+        this.geminiProperties = geminiProperties;
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public String generateContent(String prompt) {
+        String model = geminiProperties.getModel();
+
+        List<String> keys = geminiProperties.keyList();
+        if (keys.isEmpty()) throw new IllegalStateException("GEMINI_KEYS boş (ENV ile ayarla)");
+
+        String key = keys.get(ThreadLocalRandom.current().nextInt(keys.size()));
+
+        String url = "https://generativelanguage.googleapis.com/v1beta/models/"
+                + model + ":generateContent?key=" + key;
+
+        Map<String, Object> body = new HashMap<>();
+        body.put("contents", List.of(
+                Map.of("parts", List.of(Map.of("text", prompt)))
+        ));
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+
+        ResponseEntity<Map> resp = restTemplate.exchange(
+                url, HttpMethod.POST, new HttpEntity<>(body, headers), Map.class
+        );
+
+        Map<String, Object> map = resp.getBody();
+        if (map == null) return "";
+
+        List<Map<String, Object>> candidates = (List<Map<String, Object>>) map.get("candidates");
+        if (candidates == null || candidates.isEmpty()) return "";
+
+        Map<String, Object> content = (Map<String, Object>) candidates.get(0).get("content");
+        if (content == null) return "";
+
+        List<Map<String, Object>> parts = (List<Map<String, Object>>) content.get("parts");
+        if (parts == null || parts.isEmpty()) return "";
+
+        Object text = parts.get(0).get("text");
+        return text == null ? "" : text.toString();
+    }
+}
